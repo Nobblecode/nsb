@@ -1,10 +1,41 @@
 
 const BASE_URL = "https://api.twelvedata.com/time_series";
 
-const CACHE_TTL_MS = 60_000; // Cache successful data for 60 seconds
+const CACHE_TTL_MS = 60_000;
 
 const candleCache = new Map();
 const pendingRequests = new Map();
+
+function getIntervalMs(interval) {
+  const match = /^(\d+)(min|h|day|week|month)$/.exec(interval);
+
+  if (!match) {
+    throw new Error(`Unsupported candle interval: ${interval}`);
+  }
+
+  const amount = Number(match[1]);
+
+  const unitMs = {
+    min: 60_000,
+    h: 60 * 60_000,
+    day: 24 * 60 * 60_000,
+    week: 7 * 24 * 60 * 60_000,
+    // Calendar months have variable lengths; handle separately if needed.
+    month: null,
+  };
+
+  if (match[2] === "month") {
+    throw new Error(
+      "Monthly candles need calendar-month boundary handling."
+    );
+  }
+
+  return amount * unitMs[match[2]];
+}
+
+function parseUtcTime(time) {
+  return Date.parse(`${time.replace(" ", "T")}Z`);
+}
 
 export async function getCandles(interval = "1h", outputsize = 250) {
   const apiKey = process.env.TWELVE_DATA_API_KEY;
@@ -17,15 +48,15 @@ export async function getCandles(interval = "1h", outputsize = 250) {
     throw error;
   }
 
+  const intervalMs = getIntervalMs(interval);
   const cacheKey = `${interval}:${outputsize}`;
+
   const cached = candleCache.get(cacheKey);
 
-  // Reuse recently fetched candles.
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.candles;
   }
 
-  // Reuse an in-progress request instead of sending duplicates.
   if (pendingRequests.has(cacheKey)) {
     return pendingRequests.get(cacheKey);
   }
@@ -63,6 +94,8 @@ export async function getCandles(interval = "1h", outputsize = 250) {
       throw error;
     }
 
+    const now = Date.now();
+
     const candles = json.values
       .map((c) => ({
         time: c.datetime,
@@ -76,34 +109,57 @@ export async function getCandles(interval = "1h", outputsize = 250) {
             : Number(c.volume),
       }))
       .filter((c) => {
-        const validPrices = [
-          c.open,
-          c.high,
-          c.low,
-          c.close,
-        ].every(Number.isFinite);
+        const prices = [c.open, c.high, c.low, c.close];
+
+        const validPrices = prices.every(Number.isFinite);
 
         const validTime =
           typeof c.time === "string" &&
-          !Number.isNaN(Date.parse(c.time));
+          Number.isFinite(parseUtcTime(c.time));
 
         const validOHLC =
+          validPrices &&
           c.high >= Math.max(c.open, c.close, c.low) &&
           c.low <= Math.min(c.open, c.close, c.high);
 
-        return validPrices && validTime && validOHLC;
+        if (!validTime || !validOHLC) {
+          return false;
+        }
+
+        // Keep only candles whose entire interval has elapsed.
+        const candleStart = parseUtcTime(c.time);
+        const candleEnd = candleStart + intervalMs;
+
+        return candleEnd <= now;
       })
       .reverse();
 
-    if (candles.length < 2) {
+    // Ensure timestamps are strictly increasing.
+    for (let i = 1; i < candles.length; i++) {
+      if (parseUtcTime(candles[i].time) <= parseUtcTime(candles[i - 1].time)) {
+        throw new Error(
+          "Candle timestamps are duplicated or not in chronological order."
+        );
+      }
+    }
+
+    if (candles.length < 60) {
       const error = new Error(
-        "Not enough valid candles were returned to display the chart."
+        `Only ${candles.length} completed, valid candles were returned for ${interval}; at least 60 are required.`
       );
       error.status = 502;
       throw error;
     }
 
-    // Cache only successful responses.
+    console.log("Completed candle data:", {
+      interval,
+      candleCount: candles.length,
+      latestCompletedCandle: candles.at(-1),
+      latestCandleEndUtc: new Date(
+        parseUtcTime(candles.at(-1).time) + intervalMs
+      ).toISOString(),
+    });
+
     candleCache.set(cacheKey, {
       timestamp: Date.now(),
       candles,

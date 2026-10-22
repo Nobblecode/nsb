@@ -1,17 +1,14 @@
 
 "use client";
+
 import EconomicCalendar from "@/components/EconomicCalendar";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
   BarChart3,
   CheckCircle2,
-  Clock3,
   Crosshair,
-  ExternalLink,
   LoaderCircle,
   Play,
   RefreshCw,
@@ -19,27 +16,26 @@ import {
   Wallet,
   TrendingDown,
   TrendingUp,
+  XCircle,
 } from "lucide-react";
 
 import Sidebar from "@/components/Sidebar";
-import TradingChart from "@/components/TradingChart";
 import { calculatePosition } from "@/lib/riskManagement";
 
-const money = (n) =>
-  n == null || !Number.isFinite(Number(n))
-    ? "—"
-    : Number(n).toFixed(5);
+const money = (value) => {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return Number(value).toFixed(5);
+};
 
 const storedRead = (key, fallback) => {
   try {
-    const value = localStorage.getItem(key);
+    if (typeof window === "undefined") return fallback;
+    const value = window.localStorage.getItem(key);
     return value ? JSON.parse(value) : fallback;
   } catch {
     return fallback;
   }
 };
-
-/* Shows every strategy condition returned by the analysis API. */
 
 function AnalysisChecks({ checks = [] }) {
   if (!checks.length) {
@@ -61,7 +57,8 @@ function AnalysisChecks({ checks = [] }) {
             Strategy validation checklist
           </h3>
           <p className="mt-1 text-xs text-slate-400">
-            Every required condition must pass before NSB permits a simulated trade.
+            Technical confirmations determine whether a setup qualifies.
+            Incomplete fundamentals may allow technical-only analysis.
           </p>
         </div>
 
@@ -77,9 +74,9 @@ function AnalysisChecks({ checks = [] }) {
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {checks.map((check) => (
+        {checks.map((check, index) => (
           <div
-            key={check.id}
+            key={check.id || `${check.label}-${index}`}
             className={`rounded-xl border p-3 ${
               check.passed
                 ? "border-emerald-500/20 bg-emerald-500/5"
@@ -103,11 +100,11 @@ function AnalysisChecks({ checks = [] }) {
 
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-slate-100">
-                  {check.label}
+                  {check.label || "Validation check"}
                 </p>
 
                 <p className="mt-1 text-xs leading-5 text-slate-400">
-                  {check.detail}
+                  {check.detail || "No additional details were provided."}
                 </p>
 
                 <p
@@ -117,7 +114,7 @@ function AnalysisChecks({ checks = [] }) {
                       : "text-amber-300"
                   }`}
                 >
-                  {check.passed ? "PASSED" : "FAILED — TRADE BLOCKED"}
+                  {check.passed ? "PASSED" : "FAILED — REVIEW REQUIRED"}
                 </p>
               </div>
             </div>
@@ -125,34 +122,32 @@ function AnalysisChecks({ checks = [] }) {
         ))}
       </div>
 
-      {failedCount > 0 && (
+      {failedCount > 0 ? (
         <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3">
           <p className="text-sm font-semibold text-amber-200">
-            {failedCount} condition{failedCount === 1 ? "" : "s"} still need
-            to pass.
+            {failedCount} validation check{failedCount === 1 ? "" : "s"} did
+            not pass.
           </p>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            NSB will continue to show NO TRADE until every required condition
-            passes. Do not force a signal just to open a simulated position.
+            Review the failed checks. A failed mandatory technical
+            confirmation or a confirmed high-impact event can prevent a
+            qualifying setup.
           </p>
         </div>
-      )}
-
-      {failedCount === 0 && (
+      ) : (
         <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
           <p className="text-sm font-semibold text-emerald-200">
-            All required conditions passed.
+            All reported checks passed.
           </p>
-          <p className="mt-1 text-xs text-slate-400">
-            The strategy rules permit a directional setup. This does not
-            guarantee a profitable trade.
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            This does not guarantee profitability. Check the event-risk
+            status and execution conditions before opening a paper trade.
           </p>
         </div>
       )}
     </div>
   );
 }
-
 
 export default function Home() {
   const [interval, setInterval] = useState("1h");
@@ -174,16 +169,31 @@ export default function Home() {
   const [lastUpdated, setLastUpdated] = useState(null);
 
   useEffect(() => {
-    setTrades(storedRead("nsb-paper-trades", []));
-    setBalance(storedRead("nsb-account-balance", "10000"));
+    const savedTrades = storedRead("nsb-paper-trades", []);
+    const savedBalance = storedRead("nsb-account-balance", "10000");
+
+    setTrades(Array.isArray(savedTrades) ? savedTrades : []);
+    setBalance(String(savedBalance));
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("nsb-account-balance", JSON.stringify(balance));
+    } catch {
+      // The current session still works if browser storage is unavailable.
+    }
+  }, [balance]);
 
   const fetchMarket = useCallback(async (tf = interval) => {
     setLoadingMarket(true);
     setMarketError("");
 
     try {
-      const response = await fetch(`/api/market?interval=${tf}`);
+      const response = await fetch(
+        `/api/market?interval=${encodeURIComponent(tf)}`,
+        { cache: "no-store" }
+      );
+
       const json = await response.json();
 
       if (!response.ok) {
@@ -207,42 +217,65 @@ export default function Home() {
     fetchMarket(interval);
   }, [interval, fetchMarket]);
 
- 
-const runAnalysis = async () => {
-  setAnalyzing(true);
-  setAnalysisError("");
+  const runAnalysis = async () => {
+    setAnalyzing(true);
+    setAnalysisError("");
 
-  try {
-    const response = await fetch("/api/analyze", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({}),
-      cache: "no-store",
-    });
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        cache: "no-store",
+      });
 
-    const json = await response.json();
+      const json = await response.json();
 
-    if (!response.ok) {
-      throw new Error(json.error || "Analysis failed");
+      if (!response.ok) {
+        throw new Error(json.error || "Analysis failed");
+      }
+
+      setAnalysis(json);
+    } catch (error) {
+      setAnalysisError(error.message || "Automatic analysis failed");
+      setAnalysis(null);
+    } finally {
+      setAnalyzing(false);
     }
+  };
 
-    setAnalysis(json);
-  } catch (error) {
-    setAnalysisError(error.message || "Automatic analysis failed");
-    setAnalysis(null);
-  } finally {
-    setAnalyzing(false);
-  }
-};
+  const combined = analysis?.combined;
+  const oneHour = analysis?.oneHour;
+  const fourHour = analysis?.fourHour;
+  const fundamentals = analysis?.fundamentals;
 
+  const signal = combined?.signal || "Awaiting analysis";
+  const validationChecks = combined?.checks || [];
+
+  // Use the combined decision as the final authority for the paper trade.
+  const trade = useMemo(() => {
+    if (!analysis) return null;
+
+    const reportedTrade = analysis.trade || {};
+    const finalSignal = analysis.combined?.signal || "NO TRADE";
+
+    return {
+      ...reportedTrade,
+      signal: finalSignal,
+      entry: reportedTrade.entry ?? analysis.oneHour?.entry ?? null,
+      stopLoss:
+        reportedTrade.stopLoss ?? analysis.oneHour?.stopLoss ?? null,
+      takeProfits:
+        reportedTrade.takeProfits ?? analysis.oneHour?.takeProfits ?? [],
+    };
+  }, [analysis]);
 
   const position = useMemo(() => {
     if (
-      analysis?.trade?.entry == null ||
-      analysis?.trade?.stopLoss == null ||
-      analysis.trade.signal === "NO TRADE"
+      !trade ||
+      !["BUY", "SELL"].includes(trade.signal) ||
+      trade.entry == null ||
+      trade.stopLoss == null
     ) {
       return null;
     }
@@ -251,90 +284,91 @@ const runAnalysis = async () => {
       return calculatePosition({
         accountBalance: balance,
         riskPercent,
-        entry: analysis.trade.entry,
-        stopLoss: analysis.trade.stopLoss,
+        entry: trade.entry,
+        stopLoss: trade.stopLoss,
       });
     } catch {
       return null;
     }
-  }, [analysis, balance, riskPercent]);
+  }, [trade, balance, riskPercent]);
 
   const saveTrades = (nextTrades) => {
     setTrades(nextTrades);
 
     try {
-      localStorage.setItem(
+      window.localStorage.setItem(
         "nsb-paper-trades",
         JSON.stringify(nextTrades)
       );
     } catch {
-      // The current session still updates if browser storage is unavailable.
+      // Keep the updated trades in the current session.
     }
   };
 
   const openPaperTrade = () => {
     if (
-      !analysis?.trade ||
-      analysis.trade.signal === "NO TRADE" ||
+      !trade ||
+      !["BUY", "SELL"].includes(trade.signal) ||
       !position
     ) {
       return;
     }
 
-    const trade = {
+    const paperTrade = {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
-      signal: analysis.trade.signal,
-      entry: analysis.trade.entry,
-      stopLoss: analysis.trade.stopLoss,
-      takeProfits: analysis.trade.takeProfits,
+      signal: trade.signal,
+      entry: trade.entry,
+      stopLoss: trade.stopLoss,
+      takeProfits: trade.takeProfits,
       riskAmount: position.riskAmount,
       lots: position.lots,
       status: "open",
       outcome: null,
     };
 
-    saveTrades([trade, ...trades]);
+    saveTrades([paperTrade, ...trades]);
   };
 
   const closePaperTrade = (id) => {
     saveTrades(
-      trades.map((trade) =>
-        trade.id === id
+      trades.map((item) =>
+        item.id === id
           ? {
-              ...trade,
+              ...item,
               status: "closed",
               outcome: tradeOutcome,
               closedAt: new Date().toISOString(),
             }
-          : trade
+          : item
       )
     );
   };
 
-  const closedTrades = trades.filter(
-    (trade) => trade.status === "closed"
-  );
+  const closedTrades = trades.filter((item) => item.status === "closed");
+  const openTrades = trades.filter((item) => item.status === "open");
 
   const winRate = closedTrades.length
     ? Math.round(
-        (closedTrades.filter((trade) => trade.outcome === "win").length /
+        (closedTrades.filter((item) => item.outcome === "win").length /
           closedTrades.length) *
           100
       )
     : null;
 
   const price = market?.latest?.close;
-  const signal = analysis?.combined?.signal || "Awaiting analysis";
-
-  const validationChecks = analysis?.combined?.checks ?? [];
+  const eventRisk = fundamentals?.eventRisk || combined?.eventRisk || "unknown";
+  const analysisMode =
+    combined?.analysisMode ||
+    (combined?.fundamentalsComplete
+      ? "TECHNICAL + FUNDAMENTAL"
+      : "TECHNICAL ONLY");
 
   return (
     <div className="min-h-screen">
       <Sidebar />
 
       <main className="mx-auto max-w-[1600px] px-4 py-5 md:ml-[230px] md:px-7 md:py-7">
-        {/* Page header */}
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="eyebrow mb-2">
@@ -346,11 +380,11 @@ const runAnalysis = async () => {
             </h1>
 
             <p className="mt-2 text-sm text-slate-400">
-              EUR/USD · structure + fundamentals · paper trading only
+              EUR/USD · 1H technical setup + 4H context · paper trading only
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="pill">
               <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-400" />
               PAPER MODE
@@ -365,18 +399,15 @@ const runAnalysis = async () => {
                 size={15}
                 className={loadingMarket ? "animate-spin" : ""}
               />
-              Refresh
+              Refresh market
             </button>
           </div>
         </header>
 
-        {/* Summary cards */}
         <section className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
           <div className="kpi">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                EUR/USD last close
-              </span>
+              <span className="text-xs text-slate-400">EUR/USD last close</span>
               <Activity size={16} className="text-blue-300" />
             </div>
 
@@ -385,15 +416,13 @@ const runAnalysis = async () => {
             </div>
 
             <div className="mt-1 text-xs text-slate-500">
-              {market ? `Source: ${market.source}` : "No live data loaded"}
+              {market ? `Source: ${market.source || "Market provider"}` : "No market data loaded"}
             </div>
           </div>
 
           <div className="kpi">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                Combined signal
-              </span>
+              <span className="text-xs text-slate-400">Combined signal</span>
               <Crosshair size={16} className="text-violet-300" />
             </div>
 
@@ -410,34 +439,26 @@ const runAnalysis = async () => {
             </div>
 
             <div className="mt-1 text-xs text-slate-500">
-              Strict confirmation rules enabled
+              Strict technical confirmations enabled
             </div>
           </div>
 
           <div className="kpi">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                Paper trades
-              </span>
+              <span className="text-xs text-slate-400">Paper trades</span>
               <Wallet size={16} className="text-blue-300" />
             </div>
 
-            <div className="mt-3 text-2xl font-bold">
-              {trades.length}
-            </div>
+            <div className="mt-3 text-2xl font-bold">{trades.length}</div>
 
             <div className="mt-1 text-xs text-slate-500">
-              {trades.filter((trade) => trade.status === "open").length} open
-              {" · "}
-              {closedTrades.length} closed
+              {openTrades.length} open · {closedTrades.length} closed
             </div>
           </div>
 
           <div className="kpi">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                Paper win rate
-              </span>
+              <span className="text-xs text-slate-400">Paper win rate</span>
               <BarChart3 size={16} className="text-emerald-300" />
             </div>
 
@@ -451,63 +472,57 @@ const runAnalysis = async () => {
           </div>
         </section>
 
-        {/* Chart and analysis controls */}
-        
-          <section className="panel p-4 md:p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  Analysis controls
-                </h2>
-                <p className="mt-1 text-xs text-slate-400">
-                  Automatic market and fundamental analysis
-                </p>
-              </div>
-
-              <Activity size={19} className="text-blue-300" />
+        <section className="panel p-4 md:p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Analysis controls</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Automatic market and economic-calendar assessment
+              </p>
             </div>
 
-            <div className="space-y-4">
-              <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+            <Activity size={19} className="text-blue-300" />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+              <div className="flex items-center gap-2">
+                <Activity size={18} className="text-blue-300" />
+                <h3 className="font-semibold text-white">
+                  Automatic analysis
+                </h3>
+              </div>
+
+              <p className="mt-2 text-xs leading-5 text-slate-400">
+                NSB retrieves market candles and evaluates the 1H technical
+                setup, 4H trend context, and available fundamental and
+                economic-calendar information.
+              </p>
+
+              <div className="mt-4 space-y-2 text-xs text-slate-300">
                 <div className="flex items-center gap-2">
-                  <Activity size={18} className="text-blue-300" />
-                  <h3 className="font-semibold text-white">
-                    Fully automatic analysis
-                  </h3>
+                  <CheckCircle2 size={15} className="text-blue-300" />
+                  EMA, breakout, and ATR-based levels
                 </div>
 
-                <p className="mt-2 text-xs leading-5 text-slate-400">
-                  NSB retrieves EUR/USD market candles and economic-calendar
-                  data, evaluates technical structure and fundamental
-                  conditions, and combines the results using your strategy
-                  rules.
-                </p>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={15} className="text-blue-300" />
+                  1H setup with 4H trend context
+                </div>
 
-                <div className="mt-4 space-y-2 text-xs text-slate-300">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 size={15} className="text-blue-300" />
-                    1H and 4H trend analysis
-                  </div>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={15} className="text-blue-300" />
+                  Automatic economic-calendar assessment
+                </div>
 
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 size={15} className="text-blue-300" />
-                    EMA, breakout and ATR-based levels
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 size={15} className="text-blue-300" />
-                    Automatic economic-calendar assessment
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <ShieldAlert size={15} className="text-amber-300" />
-                    Missing data or failed checks can block a trade
-                  </div>
+                <div className="flex items-center gap-2">
+                  <ShieldAlert size={15} className="text-amber-300" />
+                  Incomplete fundamentals are identified, not assumed
                 </div>
               </div>
 
               <button
-                className="btn btn-primary w-full py-3"
+                className="btn btn-primary mt-5 w-full py-3"
                 onClick={runAnalysis}
                 disabled={analyzing}
               >
@@ -517,46 +532,72 @@ const runAnalysis = async () => {
                   <Play size={16} />
                 )}
 
-                {analyzing
-                  ? "Analyzing market and fundamentals..."
-                  : "Analyze EUR/USD"}
+                {analyzing ? "Analyzing market and fundamentals..." : "Analyze EUR/USD"}
               </button>
 
               {analysisError && (
-                <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+                <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
                   <b>Analysis failed</b>
                   <p className="mt-1">{analysisError}</p>
                 </div>
               )}
+            </div>
 
-              <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3">
+            <div className="space-y-4">
+              <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
+                <h3 className="font-semibold text-white">Market data status</h3>
+
+                <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                  <span className="text-slate-400">Market timeframe</span>
+                  <select
+                    className="rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-white"
+                    value={interval}
+                    onChange={(event) => setInterval(event.target.value)}
+                  >
+                    <option value="1h">1 hour</option>
+                    <option value="4h">4 hours</option>
+                  </select>
+                </div>
+
+                <p className="mt-3 text-xs text-slate-400">
+                  {lastUpdated
+                    ? `Last market refresh: ${lastUpdated.toLocaleTimeString()}`
+                    : "Market data has not been refreshed yet."}
+                </p>
+
+                {marketError && (
+                  <p className="mt-2 text-xs text-rose-300">{marketError}</p>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
                 <div className="flex gap-2 text-xs font-semibold text-amber-100">
                   <ShieldAlert size={16} />
                   Validation and risk controls
                 </div>
 
                 <p className="mt-2 text-xs leading-5 text-slate-400">
-                  NSB should show NO TRADE when required confirmations fail
-                  or fundamental data is incomplete. Signals are not
-                  guaranteed predictions.
+                  A failed mandatory technical confirmation can block a
+                  setup. Incomplete fundamentals may permit technical-only
+                  analysis, while a confirmed high-impact event blocks new
+                  setups under the current strategy rules. Unknown event risk
+                  is unverified, not safe.
                 </p>
               </div>
             </div>
-          </section>
+          </div>
+        </section>
 
-        
-
-        {/* Analysis report */}
         <section className="panel mt-5 p-4 md:p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold">Analysis report</h2>
               <p className="mt-1 text-xs text-slate-400">
-                Rule-based structure analysis · not financial advice
+                Rule-based analysis · not financial advice
               </p>
             </div>
 
-            {analysis && (
+            {analysis?.generatedAt && (
               <span className="pill">
                 Updated {new Date(analysis.generatedAt).toLocaleTimeString()}
               </span>
@@ -565,361 +606,214 @@ const runAnalysis = async () => {
 
           {!analysis ? (
             <div className="grid-lines rounded-xl border border-dashed border-[#2b3b55] px-5 py-10 text-center">
-              <Crosshair
-                className="mx-auto mb-3 text-slate-500"
-                size={28}
-              />
-
+              <Crosshair className="mx-auto mb-3 text-slate-500" size={28} />
               <p className="font-semibold">No analysis report yet</p>
-
               <p className="mt-1 text-sm text-slate-500">
-                Click Analyze EUR/USD to retrieve market data and assess the strategy automatically.
+                Click Analyze EUR/USD to retrieve the latest analysis.
               </p>
             </div>
           ) : (
             <>
-              {/* Timeframe and fundamentals summary */}
               <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
                 <div className="kpi">
-                  <div className="text-xs text-slate-400">
-                    1H trend / setup
-                  </div>
+                  <div className="text-xs text-slate-400">1H trend / setup</div>
 
                   <div className="mt-2 flex items-center gap-2 text-lg font-semibold">
-                    {analysis.oneHour.trend === "bullish" ? (
+                    {oneHour?.trend === "bullish" ? (
                       <TrendingUp className="text-emerald-300" />
-                    ) : analysis.oneHour.trend === "bearish" ? (
+                    ) : oneHour?.trend === "bearish" ? (
                       <TrendingDown className="text-rose-300" />
                     ) : (
                       <Activity className="text-amber-200" />
                     )}
-
-                    {analysis.oneHour.trend.toUpperCase()}
+                    {(oneHour?.trend || "unknown").toUpperCase()}
                   </div>
 
                   <p className="mt-2 text-xs leading-5 text-slate-400">
-                    {analysis.oneHour.structure}
+                    {oneHour?.structure || oneHour?.reason || "No structure details returned."}
                   </p>
                 </div>
 
                 <div className="kpi">
-                  <div className="text-xs text-slate-400">
-                    4H trend / context
-                  </div>
+                  <div className="text-xs text-slate-400">4H trend / context</div>
 
                   <div className="mt-2 text-lg font-semibold">
-                    {analysis.fourHour.trend.toUpperCase()}
+                    {(fourHour?.trend || "unknown").toUpperCase()}
                   </div>
 
                   <p className="mt-2 text-xs leading-5 text-slate-400">
-                    EMA20 {money(analysis.fourHour.ema20)} · EMA50{" "}
-                    {money(analysis.fourHour.ema50)}
+                    EMA20 {money(fourHour?.ema20)} · EMA50 {money(fourHour?.ema50)}
                   </p>
                 </div>
 
-                
-<div className="kpi">
-  <div className="text-xs text-slate-400">
-    Automatic fundamentals
-  </div>
-
-  <div className="mt-2 text-lg font-semibold capitalize">
-    {analysis.fundamentals?.bias || "unknown"}
-  </div>
-
-  <p className="mt-1 text-xs text-slate-400">
-    Event risk: {analysis.fundamentals?.eventRisk || "unknown"}
-  </p>
-
-  <p className="mt-2 text-xs leading-5 text-slate-400">
-    Source: {analysis.fundamentals?.source || "Unavailable"}
-  </p>
-
-  {analysis.fundamentals?.note && (
-    <p className="mt-2 text-xs leading-5 text-slate-300">
-      {analysis.fundamentals.note}
-    </p>
-  )}
-</div>
-
+                <div className="kpi">
+                  <div className="text-xs text-slate-400">Automatic fundamentals</div>
 
                   <div className="mt-2 text-lg font-semibold capitalize">
-                    {analysis.fundamentals.bias} /{" "}
-                    {analysis.fundamentals.eventRisk} risk
+                    {fundamentals?.bias || combined?.bias || "unknown"}
                   </div>
+
+                  <p className="mt-1 text-xs text-slate-400">
+                    Event risk: {eventRisk}
+                  </p>
 
                   <p className="mt-2 text-xs leading-5 text-slate-400">
-                    {analysis.fundamentals.source}
-                  </p>
-                </div>
-              
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(300px,.8fr)]">
-                
-<div className="mt-4 rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
-  <AnalysisChecks checks={analysis.combined.checks || []} />
-</div>
-
-                {/* Decision and full checklist */}
-                <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
-                  <div className="mb-3 flex items-center gap-2">
-                    <div
-                      className={`rounded-lg p-2 ${
-                        analysis.combined.signal === "BUY"
-                          ? "bg-emerald-500/10 text-emerald-300"
-                          : analysis.combined.signal === "SELL"
-                            ? "bg-rose-500/10 text-rose-300"
-                            : "bg-amber-500/10 text-amber-200"
-                      }`}
-                    >
-                      {analysis.combined.signal === "BUY" ? (
-                        <ArrowUpRight size={19} />
-                      ) : analysis.combined.signal === "SELL" ? (
-                        <ArrowDownRight size={19} />
-                      ) : (
-                        <AlertTriangle size={19} />
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="text-xs text-slate-400">
-                        Combined decision
-                      </div>
-
-                      <div className="text-xl font-bold">
-                        {analysis.combined.signal}
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="text-sm leading-6 text-slate-300">
-                    {analysis.combined.reason}
+                    Source: {fundamentals?.source || "Unavailable"}
                   </p>
 
-                  {/* NEW: detailed pass/fail checklist */}
-                  <AnalysisChecks checks={validationChecks} />
+                  <p className="mt-2 text-xs text-slate-400">
+                    Mode: {analysisMode}
+                  </p>
 
-                  {analysis.fundamentals.caution && (
-                    <p className="mt-3 text-xs text-amber-200">
-                      {analysis.fundamentals.caution}
+                  {fundamentals?.note && (
+                    <p className="mt-2 text-xs leading-5 text-slate-300">
+                      {fundamentals.note}
                     </p>
                   )}
-                </div>
-
-                {/* Trade levels */}
-                <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
-                  <h3 className="mb-3 font-semibold">Trade levels</h3>
-
-                  <div className="space-y-3 text-sm">
-                    <div className="flex justify-between gap-3">
-                      <span className="text-slate-400">
-                        Entry / last close
-                      </span>
-                      <b className="tabular-nums">
-                        {money(analysis.trade.entry)}
-                      </b>
-                    </div>
-
-                    <div className="flex justify-between gap-3">
-                      <span className="text-rose-300">Stop loss</span>
-                      <b className="tabular-nums">
-                        {money(analysis.trade.stopLoss)}
-                      </b>
-                    </div>
-
-                    {(analysis.trade.takeProfits ?? []).map((value, index) => (
-                      <div
-                        className="flex justify-between gap-3"
-                        key={index}
-                      >
-                        <span className="text-emerald-300">
-                          Take profit {index + 1}
-                        </span>
-                        <b className="tabular-nums">{money(value)}</b>
-                      </div>
-                    ))}
-                  </div>
-
-                  <p className="mt-3 text-[11px] leading-5 text-slate-500">
-                    Levels are ATR-based illustrations, not broker orders.
-                    Entry is based on the latest candle supplied by the
-                    analysis provider; verify whether it is completed.
-                    NO TRADE hides all levels.
-                  </p>
                 </div>
               </div>
 
-              {/* Risk calculator and validation status */}
-              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,.7fr)]">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(300px,.8fr)]">
                 <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
-                  <h3 className="mb-3 flex items-center gap-2 font-semibold">
-                    <ShieldAlert size={17} className="text-blue-300" />
-                    Risk calculator
-                  </h3>
+                  <AnalysisChecks checks={validationChecks} />
+                </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="mb-1 block text-xs text-slate-400">
-                        Account balance (USD)
-                      </label>
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
+                    <h3 className="font-semibold text-white">Combined decision</h3>
 
-                      <input
-                        className="field"
-                        type="number"
-                        min="1"
-                        value={balance}
-                        onChange={(event) => {
-                          setBalance(event.target.value);
-
-                          try {
-                            localStorage.setItem(
-                              "nsb-account-balance",
-                              JSON.stringify(event.target.value)
-                            );
-                          } catch {
-                            // Storage may be unavailable.
-                          }
-                        }}
-                      />
+                    <div
+                      className={`mt-3 text-2xl font-bold ${
+                        signal === "BUY"
+                          ? "text-emerald-300"
+                          : signal === "SELL"
+                            ? "text-rose-300"
+                            : "text-amber-200"
+                      }`}
+                    >
+                      {signal}
                     </div>
 
-                    <div>
-                      <label className="mb-1 block text-xs text-slate-400">
-                        Risk per trade (%)
-                      </label>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">
+                      {combined?.reason || "No combined decision details were returned."}
+                    </p>
 
-                      <select
-                        className="field"
-                        value={riskPercent}
-                        onChange={(event) =>
-                          setRiskPercent(event.target.value)
-                        }
-                      >
-                        <option value="0.25">0.25%</option>
-                        <option value="0.5">0.5%</option>
-                        <option value="1">1%</option>
-                        <option value="1.5">1.5%</option>
-                        <option value="2">2% (max)</option>
-                      </select>
+                    <div className="mt-4 border-t border-[#26354c] pt-3">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-slate-400">Analysis mode</span>
+                        <span className="font-medium text-slate-200">
+                          {analysisMode}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between gap-3 text-sm">
+                        <span className="text-slate-400">Event risk</span>
+                        <span
+                          className={`font-medium ${
+                            eventRisk === "high"
+                              ? "text-rose-300"
+                              : eventRisk === "unknown"
+                                ? "text-amber-200"
+                                : "text-slate-200"
+                          }`}
+                        >
+                          {eventRisk}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  {position ? (
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      <div className="kpi">
-                        <div className="text-[10px] text-slate-400">
-                          Risk amount
-                        </div>
-                        <div className="mt-1 font-semibold">
-                          ${position.riskAmount}
-                        </div>
+                  <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
+                    <h3 className="font-semibold text-white">Trade plan</h3>
+
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs text-slate-400">Entry</p>
+                        <p className="mt-1 font-semibold">{money(trade?.entry)}</p>
                       </div>
-
-                      <div className="kpi">
-                        <div className="text-[10px] text-slate-400">
-                          Stop distance
-                        </div>
-                        <div className="mt-1 font-semibold">
-                          {position.stopPips} pips
-                        </div>
-                      </div>
-
-                      <div className="kpi">
-                        <div className="text-[10px] text-slate-400">
-                          Approx. lots
-                        </div>
-                        <div className="mt-1 font-semibold">
-                          {position.lots}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="mt-3 text-xs text-slate-500">
-                      Risk estimate appears only when the combined decision
-                      produces valid entry and stop levels.
-                    </p>
-                  )}
-
-                  <p className="mt-3 text-[11px] leading-5 text-slate-500">
-                    {position?.disclaimer ||
-                      "The calculator estimates EUR/USD risk for a USD-denominated account. Actual execution costs may differ."}
-                  </p>
-
-                  <button
-                    className="btn btn-primary mt-4 w-full"
-                    onClick={openPaperTrade}
-                    disabled={
-                      analysis.trade.signal === "NO TRADE" || !position
-                    }
-                  >
-                    <Play size={15} />
-                    Open simulated trade
-                  </button>
-                </div>
-
-                <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
-                  <h3 className="mb-3 font-semibold">Validation status</h3>
-
-                  <div className="space-y-3 text-xs">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2
-                        size={16}
-                        className="mt-0.5 shrink-0 text-emerald-300"
-                      />
 
                       <div>
-                        <b>Price structure calculated</b>
-                        <p className="mt-1 text-slate-400">
-                          {analysis.oneHour.dataPoints} 1H candles and{" "}
-                          {analysis.fourHour.dataPoints} 4H candles retrieved.
-                        </p>
+                        <p className="text-xs text-slate-400">Stop loss</p>
+                        <p className="mt-1 font-semibold">{money(trade?.stopLoss)}</p>
                       </div>
+
+                      {(trade?.takeProfits || []).map((target, index) => (
+                        <div key={`tp-${index}`}>
+                          <p className="text-xs text-slate-400">Take profit {index + 1}</p>
+                          <p className="mt-1 font-semibold">{money(target)}</p>
+                        </div>
+                      ))}
                     </div>
 
-                    {/* Show every check again in the validation panel */}
-                    {validationChecks.map((check) => (
-                      <div
-                        key={check.id}
-                        className="flex items-start gap-2"
+                    <div className="mt-4 border-t border-[#26354c] pt-4">
+                      <h4 className="text-sm font-semibold">Paper position sizing</h4>
+
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <label className="text-xs text-slate-400">
+                          Account balance
+                          <input
+                            className="mt-1 w-full rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-sm text-white"
+                            type="number"
+                            min="0"
+                            value={balance}
+                            onChange={(event) => setBalance(event.target.value)}
+                          />
+                        </label>
+
+                        <label className="text-xs text-slate-400">
+                          Risk percentage
+                          <input
+                            className="mt-1 w-full rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-sm text-white"
+                            type="number"
+                            min="0.1"
+                            max="10"
+                            step="0.1"
+                            value={riskPercent}
+                            onChange={(event) => setRiskPercent(event.target.value)}
+                          />
+                        </label>
+                      </div>
+
+                      {position ? (
+                        <div className="mt-3 grid grid-cols-2 gap-3 rounded-lg bg-slate-800/60 p-3">
+                          <div>
+                            <p className="text-xs text-slate-400">Risk amount</p>
+                            <p className="mt-1 font-semibold">
+                              {Number(position.riskAmount).toFixed(2)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-slate-400">Estimated lots</p>
+                            <p className="mt-1 font-semibold">
+                              {Number(position.lots).toFixed(2)}
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs leading-5 text-slate-400">
+                          Position sizing appears when a BUY or SELL decision
+                          has valid entry and stop-loss levels.
+                        </p>
+                      )}
+
+                      <button
+                        className="btn btn-primary mt-4 w-full"
+                        onClick={openPaperTrade}
+                        disabled={
+                          !trade ||
+                          !["BUY", "SELL"].includes(trade.signal) ||
+                          !position
+                        }
                       >
-                        {check.passed ? (
-                          <CheckCircle2
-                            size={16}
-                            className="mt-0.5 shrink-0 text-emerald-300"
-                          />
-                        ) : (
-                          <AlertTriangle
-                            size={16}
-                            className="mt-0.5 shrink-0 text-amber-300"
-                          />
-                        )}
+                        Open paper trade
+                      </button>
 
-                        <div>
-                          <b>
-                            {check.label} —{" "}
-                            {check.passed ? "PASSED" : "NOT PASSED"}
-                          </b>
-
-                          <p className="mt-1 text-slate-400">
-                            {check.detail}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle
-                        size={16}
-                        className="mt-0.5 shrink-0 text-amber-300"
-                      />
-
-                      <div>
-                        <b>No backtested win rate yet</b>
-                        <p className="mt-1 text-slate-400">
-                          Signals have not yet been validated by a completed
-                          backtest. The analysis score is not a proven win
-                          rate.
+                      {signal === "NO TRADE" && (
+                        <p className="mt-2 text-xs text-amber-200">
+                          No paper position can be opened while the combined
+                          decision is NO TRADE.
                         </p>
-                      </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -928,111 +822,129 @@ const runAnalysis = async () => {
           )}
         </section>
 
-        <div className="mt-6">
-  <EconomicCalendar />
-</div>
-
-        {/* Paper trading journal */}
         <section className="panel mt-5 p-4 md:p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">
-                Paper trading journal
-              </h2>
-
-              <p className="mt-1 text-xs text-slate-400">
-                Saved in this browser only. No real orders are placed.
-              </p>
-            </div>
-
-            <span className="pill">
-              {trades.filter((trade) => trade.status === "open").length} open
-              positions
-            </span>
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold">Paper trading journal</h2>
+            <p className="mt-1 text-xs text-slate-400">
+              Simulated positions saved in this browser only.
+            </p>
           </div>
 
           {trades.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-[#2b3b55] p-7 text-center text-sm text-slate-500">
-              No simulated trades yet. Run an analysis and open a trade
-              when the signal is not NO TRADE.
-            </p>
+            <div className="rounded-xl border border-dashed border-[#2b3b55] px-5 py-8 text-center">
+              <Wallet className="mx-auto mb-3 text-slate-500" size={26} />
+              <p className="font-semibold">No paper trades yet</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Run an analysis and open a simulated position when a qualifying
+                setup is available.
+              </p>
+            </div>
           ) : (
             <div className="space-y-3">
-              {trades.map((trade) => (
+              {trades.map((item) => (
                 <div
-                  key={trade.id}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#26354c] bg-[#0b1525] p-3"
+                  key={item.id}
+                  className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4"
                 >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-sm font-bold ${
-                          trade.signal === "BUY"
-                            ? "text-emerald-300"
-                            : "text-rose-300"
-                        }`}
-                      >
-                        {trade.signal}
-                      </span>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`font-bold ${
+                            item.signal === "BUY"
+                              ? "text-emerald-300"
+                              : "text-rose-300"
+                          }`}
+                        >
+                          {item.signal}
+                        </span>
 
-                      <span className="pill">{trade.status}</span>
+                        <span className="text-xs text-slate-500">
+                          {new Date(item.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+                        <div>
+                          <p className="text-xs text-slate-400">Entry</p>
+                          <p className="mt-1">{money(item.entry)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400">Stop loss</p>
+                          <p className="mt-1">{money(item.stopLoss)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400">Risk amount</p>
+                          <p className="mt-1">
+                            {Number(item.riskAmount || 0).toFixed(2)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-slate-400">Lots</p>
+                          <p className="mt-1">
+                            {Number(item.lots || 0).toFixed(2)}
+                          </p>
+                        </div>
+                      </div>
                     </div>
 
-                    <p className="mt-1 text-xs text-slate-400">
-                      Entry {money(trade.entry)} · SL{" "}
-                      {money(trade.stopLoss)} · Risk ${trade.riskAmount} ·{" "}
-                      {trade.lots} lots
-                    </p>
+                    <div className="flex flex-col items-start gap-2 sm:items-end">
+                      <span
+                        className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+                          item.status === "open"
+                            ? "bg-blue-500/10 text-blue-300"
+                            : "bg-slate-500/10 text-slate-300"
+                        }`}
+                      >
+                        {item.status.toUpperCase()}
+                      </span>
 
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      {new Date(trade.createdAt).toLocaleString()}
-                    </p>
+                      {item.status === "closed" && (
+                        <span className="text-xs text-slate-400">
+                          Outcome: {item.outcome || "ungraded"}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {trade.status === "open" ? (
-                    <div className="flex items-center gap-2">
-                      <select
-                        className="field !w-auto text-xs"
-                        value={tradeOutcome}
-                        onChange={(event) =>
-                          setTradeOutcome(event.target.value)
-                        }
-                      >
-                        <option value="win">Mark win</option>
-                        <option value="loss">Mark loss</option>
-                        <option value="breakeven">Mark breakeven</option>
-                      </select>
+                  {item.status === "open" && (
+                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#26354c] pt-3">
+                      <label className="text-xs text-slate-400">
+                        Grade outcome
+                        <select
+                          className="ml-2 rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-white"
+                          value={tradeOutcome}
+                          onChange={(event) => setTradeOutcome(event.target.value)}
+                        >
+                          <option value="win">Win</option>
+                          <option value="loss">Loss</option>
+                          <option value="breakeven">Breakeven</option>
+                        </select>
+                      </label>
 
                       <button
                         className="btn btn-secondary"
-                        onClick={() => closePaperTrade(trade.id)}
+                        onClick={() => closePaperTrade(item.id)}
                       >
-                        Close trade
+                        Close and record
                       </button>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-300">
-                      Result: <b>{trade.outcome}</b>
                     </div>
                   )}
                 </div>
               ))}
             </div>
           )}
-
-          <p className="mt-4 text-[11px] leading-5 text-slate-500">
-            Paper trade outcomes are manually recorded. They do not
-            automatically determine whether price hit a target or stop.
-            Clearing browser storage can remove the journal.
-          </p>
         </section>
 
-        <footer className="px-1 py-6 text-center text-[11px] leading-5 text-slate-500">
-          NSB is an educational analysis and paper-trading tool, not
-          financial advice. Forex is high risk. Verify quotes and event
-          risk independently; historical results do not guarantee future
-          performance.
-        </footer>
+        <section className="mt-5">
+          <EconomicCalendar />
+        </section>
+
+        <p className="mt-5 text-center text-xs leading-5 text-slate-500">
+          NSB SMART BROKER is an educational analysis and paper-trading tool.
+          Signals and position estimates are not guaranteed outcomes or
+          financial advice.
+        </p>
       </main>
     </div>
   );

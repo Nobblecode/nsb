@@ -57,9 +57,28 @@ function swings(candles, wing = 2) {
   return { highs, lows };
 }
 
+function validCandles(candles) {
+  return (
+    Array.isArray(candles) &&
+    candles.length >= 60 &&
+    candles.every(
+      (candle) =>
+        Number.isFinite(candle.open) &&
+        Number.isFinite(candle.high) &&
+        Number.isFinite(candle.low) &&
+        Number.isFinite(candle.close) &&
+        candle.high >= candle.low &&
+        candle.high >= Math.max(candle.open, candle.close) &&
+        candle.low <= Math.min(candle.open, candle.close)
+    )
+  );
+}
+
 export function analyzeStructure(candles) {
-  if (!Array.isArray(candles) || candles.length < 60) {
-    throw new Error("At least 60 valid candles are required for structure analysis.");
+  if (!validCandles(candles)) {
+    throw new Error(
+      "At least 60 valid OHLC candles are required for structure analysis."
+    );
   }
 
   const closes = candles.map((candle) => candle.close);
@@ -69,23 +88,61 @@ export function analyzeStructure(candles) {
   const fastEMA = ema(closes, 20);
   const slowEMA = ema(closes, 50);
 
-  const { highs, lows } = swings(candles.slice(-100), 2);
-  const lastSwingHigh = highs.at(-1);
-  const lastSwingLow = lows.at(-1);
-
+  const ema20 = fastEMA.at(-1);
+  const ema50 = slowEMA.at(-1);
   const atrValue = atr(candles);
 
+  const recentCandles = candles.slice(-100);
+  const { highs, lows } = swings(recentCandles, 2);
+
+  const lastSwingHigh = highs.at(-1);
+  const previousSwingHigh = highs.at(-2);
+  const lastSwingLow = lows.at(-1);
+  const previousSwingLow = lows.at(-2);
+
   const trend =
-    fastEMA.at(-1) > slowEMA.at(-1) && last.close > slowEMA.at(-1)
+    ema20 > ema50 && last.close > ema50
       ? "bullish"
-      : fastEMA.at(-1) < slowEMA.at(-1) && last.close < slowEMA.at(-1)
+      : ema20 < ema50 && last.close < ema50
         ? "bearish"
         : "mixed";
 
-  // Compare the latest candle close with the previous 19 candles.
+  const higherHighs =
+    lastSwingHigh &&
+    previousSwingHigh &&
+    lastSwingHigh.price > previousSwingHigh.price;
+
+  const lowerHighs =
+    lastSwingHigh &&
+    previousSwingHigh &&
+    lastSwingHigh.price < previousSwingHigh.price;
+
+  const higherLows =
+    lastSwingLow &&
+    previousSwingLow &&
+    lastSwingLow.price > previousSwingLow.price;
+
+  const lowerLows =
+    lastSwingLow &&
+    previousSwingLow &&
+    lastSwingLow.price < previousSwingLow.price;
+
+  const structureTrend =
+    higherHighs && higherLows
+      ? "bullish"
+      : lowerHighs && lowerLows
+        ? "bearish"
+        : "mixed";
+
   const comparisonCandles = candles.slice(-20, -1);
-  const recentHigh = Math.max(...comparisonCandles.map((c) => c.high));
-  const recentLow = Math.min(...comparisonCandles.map((c) => c.low));
+
+  const recentHigh = Math.max(
+    ...comparisonCandles.map((candle) => candle.high)
+  );
+
+  const recentLow = Math.min(
+    ...comparisonCandles.map((candle) => candle.low)
+  );
 
   const brokeHigh = last.close > recentHigh;
   const brokeLow = last.close < recentLow;
@@ -102,22 +159,63 @@ export function analyzeStructure(candles) {
       ? "Bearish break of recent range"
       : "No confirmed close beyond recent 19-candle range";
 
-  const trendIsDirectional = trend !== "mixed";
-  const breakoutMatchesTrend = breakoutDirection === trend;
+  const priceConfirmsBreakout =
+    breakoutDirection === "bullish"
+      ? last.close > ema20
+      : breakoutDirection === "bearish"
+        ? last.close < ema20
+        : false;
 
-  let signal = "NO TRADE";
-  let reason = "The trend and breakout conditions are not both satisfied.";
+  const candleBody = Math.abs(last.close - last.open);
 
-  if (trendIsDirectional && breakoutMatchesTrend) {
-    signal = trend === "bullish" ? "BUY" : "SELL";
+  const bodyConfirmsBreakout =
+    atrValue > 0 && candleBody >= atrValue * 0.15;
+
+  const structuralConfirmation =
+    structureTrend === breakoutDirection;
+
+  const trendSupportsBreakout = trend === breakoutDirection;
+
+  const breakoutConfirmed = Boolean(
+    breakoutDirection &&
+      priceConfirmsBreakout &&
+      bodyConfirmsBreakout
+  );
+
+  const setupConfirmed = Boolean(
+    breakoutConfirmed &&
+      (trendSupportsBreakout || structuralConfirmation)
+  );
+
+  const signal = setupConfirmed
+    ? breakoutDirection === "bullish"
+      ? "BUY"
+      : "SELL"
+    : "NO TRADE";
+
+  let reason;
+
+  if (signal !== "NO TRADE") {
     reason =
-      signal === "BUY"
-        ? "Bullish trend and bullish range breakout confirmed."
-        : "Bearish trend and bearish range breakout confirmed.";
+      `${signal} setup: ${breakoutDirection} range break confirmed ` +
+      `by price relative to EMA20 and candle strength, with ` +
+      `${trendSupportsBreakout ? "EMA trend" : "swing structure"} support.`;
+  } else if (!breakoutDirection) {
+    reason =
+      "No confirmed close beyond the recent 19-candle range. Wait for a valid setup.";
+  } else if (!priceConfirmsBreakout) {
+    reason =
+      `${breakoutDirection} range break detected, but price has not confirmed it relative to EMA20.`;
+  } else if (!bodyConfirmsBreakout) {
+    reason =
+      "The breakout candle body is too small relative to ATR. Possible weak breakout.";
+  } else {
+    reason =
+      "A range break was detected, but neither EMA trend nor swing structure confirms its direction.";
   }
 
   const entry = last.close;
-  const stopDistance = Math.max(atrValue * 1.5, 0.0005);
+  const stopDistance = Math.max(atrValue * 1.5, entry * 0.0005);
 
   const stopLoss =
     signal === "BUY"
@@ -141,44 +239,48 @@ export function analyzeStructure(candles) {
           ]
         : [null, null, null];
 
-  const confidenceScore = Math.round(
-    Math.min(
-      85,
-      35 +
-        (trendIsDirectional ? 20 : 0) +
-        (breakoutMatchesTrend ? 20 : 0) +
-        (trendIsDirectional &&
-        ((last.close > fastEMA.at(-1) && trend === "bullish") ||
-          (last.close < fastEMA.at(-1) && trend === "bearish"))
-          ? 10
-          : 0)
-    )
-  );
+  const confidenceScore =
+    signal === "NO TRADE"
+      ? null
+      : Math.round(
+          Math.min(
+            85,
+            35 +
+              (trendSupportsBreakout ? 20 : 0) +
+              (structuralConfirmation ? 20 : 0) +
+              (bodyConfirmsBreakout ? 5 : 0) +
+              (priceConfirmsBreakout ? 5 : 0)
+          )
+        );
 
   const checks = [
     {
       id: "trend",
-      label: "Directional trend",
-      passed: trendIsDirectional,
-      detail: trendIsDirectional
-        ? `The 1H trend is ${trend}.`
-        : "The 1H EMA trend is mixed.",
+      label: "Directional technical confirmation",
+      passed: setupConfirmed,
+      detail: setupConfirmed
+        ? `The ${breakoutDirection} breakout has EMA-price and candle confirmation, supported by ${trendSupportsBreakout ? "EMA trend" : "swing structure"}.`
+        : reason,
     },
     {
       id: "breakout",
       label: "Confirmed 1H breakout",
-      passed: breakoutMatchesTrend,
-      detail: breakoutMatchesTrend
-        ? `The candle closed beyond the recent range in the ${trend} direction.`
-        : breakoutDirection
-          ? `A ${breakoutDirection} breakout conflicts with the ${trend} trend.`
-          : "The latest candle did not close beyond the recent range.",
+      passed: breakoutConfirmed,
+      detail: breakoutConfirmed
+        ? `${breakoutDirection} breakout confirmed by EMA20 position and candle body.`
+        : !breakoutDirection
+          ? "The latest candle did not close beyond the recent range."
+          : !priceConfirmsBreakout
+            ? `The ${breakoutDirection} breakout has not confirmed relative to EMA20.`
+            : "The breakout candle body is weak relative to ATR.",
     },
   ];
 
   return {
     signal,
     trend,
+    structureTrend,
+    breakoutDirection,
     structure,
     reason,
     checks,
@@ -188,13 +290,13 @@ export function analyzeStructure(candles) {
       value == null ? null : round(value)
     ),
     atr: round(atrValue),
-    ema20: round(fastEMA.at(-1)),
-    ema50: round(slowEMA.at(-1)),
+    ema20: round(ema20),
+    ema50: round(ema50),
     lastCandleTime: last.time,
     recentHigh: round(recentHigh),
     recentLow: round(recentLow),
     latestCandle: last,
-    confidenceScore: signal === "NO TRADE" ? null : confidenceScore,
+    confidenceScore,
     confidenceNote:
       "Heuristic confluence score, not a probability or proven win rate.",
     swingHigh: lastSwingHigh ? round(lastSwingHigh.price) : null,
@@ -204,113 +306,114 @@ export function analyzeStructure(candles) {
   };
 }
 
-
 export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
-  const aligned =
-    oneHour.trend === fourHour.trend &&
-    oneHour.trend !== "mixed";
-
   const validBias = ["bullish", "bearish", "neutral"].includes(
     fundamentals.bias
   );
 
   const bias = validBias ? fundamentals.bias : "unknown";
-  const mode = fundamentals.mode || "manual";
 
   const fundamentalsComplete =
     fundamentals.complete === true && validBias;
 
-  const calendarCoverageVerified =
-    fundamentals.coverageVerified === true ||
-    fundamentals.calendarCoverage === "verified";
+  const analysisMode = fundamentalsComplete
+    ? "TECHNICAL + FUNDAMENTAL"
+    : "TECHNICAL ONLY";
 
-  const reportedEventRisk = fundamentals.eventRisk || "unknown";
-
-  const eventRisk = calendarCoverageVerified
-    ? reportedEventRisk
-    : "unknown";
-
+  const eventRisk = fundamentals.eventRisk || "unknown";
   const highRisk = eventRisk === "high";
 
-  const eventRiskAcceptable =
-    calendarCoverageVerified &&
-    ["low", "medium"].includes(eventRisk);
+  const technicalSignal = oneHour.signal;
+
+  const hasTechnicalSignal =
+    technicalSignal === "BUY" || technicalSignal === "SELL";
+
+  const signalDirection =
+    technicalSignal === "BUY"
+      ? "bullish"
+      : technicalSignal === "SELL"
+        ? "bearish"
+        : "unknown";
+
+  const fourHourOpposes =
+    (signalDirection === "bullish" && fourHour.trend === "bearish") ||
+    (signalDirection === "bearish" && fourHour.trend === "bullish");
 
   const biasConflicts =
+    fundamentalsComplete &&
     bias !== "neutral" &&
-    bias !== "unknown" &&
-    bias !== oneHour.trend;
+    bias !== signalDirection;
 
-  const trendCheck = oneHour.checks?.find(
-    (check) => check.id === "trend"
-  );
-
-  const breakoutCheck = oneHour.checks?.find(
-    (check) => check.id === "breakout"
-  );
+  const eventRiskAcceptable = !highRisk;
 
   const technicalSetupValid = Boolean(
-    trendCheck?.passed && breakoutCheck?.passed
+    hasTechnicalSignal &&
+      oneHour.checks?.some(
+        (check) => check.id === "trend" && check.passed
+      ) &&
+      oneHour.checks?.some(
+        (check) => check.id === "breakout" && check.passed
+      )
   );
 
   const checks = [
     {
       id: "trend-alignment",
-      label: "1H and 4H trend alignment",
-      passed: aligned,
-      detail: aligned
-        ? `Both timeframes are ${oneHour.trend}.`
-        : `1H trend: ${oneHour.trend}. 4H trend: ${fourHour.trend}. Both must agree and cannot be mixed.`,
+      label: "4H trend context",
+      passed: !fourHourOpposes,
+      detail: fourHourOpposes
+        ? `The 4H ${fourHour.trend} trend opposes the 1H ${signalDirection} setup.`
+        : fourHour.trend === "mixed"
+          ? "The 4H EMA trend is mixed. It does not confirm direction, so use extra caution."
+          : `The 4H trend (${fourHour.trend}) does not oppose the 1H setup.`,
     },
     {
       id: "directional-trend",
-      label: "Directional 1H trend",
-      passed: Boolean(trendCheck?.passed),
-      detail:
-        trendCheck?.detail ||
-        "No directional trend confirmation was returned.",
+      label: "Directional 1H technical setup",
+      passed: Boolean(technicalSetupValid),
+      detail: technicalSetupValid
+        ? oneHour.reason
+        : oneHour.reason || "The 1H technical setup is not confirmed.",
     },
     {
       id: "breakout-confirmation",
       label: "Confirmed 1H breakout",
-      passed: Boolean(breakoutCheck?.passed),
+      passed: Boolean(
+        oneHour.checks?.some(
+          (check) => check.id === "breakout" && check.passed
+        )
+      ),
       detail:
-        breakoutCheck?.detail ||
-        "No breakout confirmation was returned.",
+        oneHour.checks?.find((check) => check.id === "breakout")?.detail ||
+        "No confirmed 1H breakout was returned.",
     },
     {
       id: "fundamentals",
-      label: "Fundamental assessment complete",
-      passed: fundamentalsComplete,
+      label: "Fundamental assessment",
+      passed: true,
       detail: fundamentalsComplete
-        ? `The ${mode} fundamental assessment is complete.`
-        : fundamentals.note ||
-          "Fundamental data is incomplete or the bias has not been established. A neutral default is not sufficient evidence.",
+        ? "Fundamental bias data is available."
+        : "Fundamentals are incomplete. Technical-only mode is being used; fundamental direction is not assumed.",
     },
     {
-  id: "event-risk",
-  label: "High-impact event risk",
-  passed: eventRiskAcceptable && !highRisk,
-  detail: highRisk
-    ? "High-impact event risk detected. NSB blocks new setups."
-    : !calendarCoverageVerified
-      ? "Economic calendar coverage is unverified. NSB blocks new setups until coverage and event risk can be verified."
-      : eventRiskAcceptable
-        ? `Verified event risk is ${eventRisk}; the event-risk check passed.`
-        : "Event risk is unknown or cannot be verified. NSB blocks new setups.",
-},
+      id: "event-risk",
+      label: "High-impact event risk",
+      passed: eventRiskAcceptable,
+      detail: highRisk
+        ? "A high-impact event is identified. NSB blocks new setups."
+        : eventRisk === "unknown"
+          ? "Calendar risk is unverified. Technical-only analysis may proceed, but unexpected event risk remains."
+          : `Reported event risk is ${eventRisk}.`,
+    },
     {
       id: "fundamental-bias",
       label: "Fundamental and technical bias",
-      passed:
-        fundamentalsComplete &&
-        validBias &&
-        !biasConflicts,
-      detail: !fundamentalsComplete || !validBias
-        ? "Fundamental bias cannot be verified until a complete assessment is available."
+      passed: !fundamentalsComplete || !biasConflicts,
+      detail: !fundamentalsComplete
+        ? "No complete fundamental bias is available; no fundamental direction is assumed."
         : biasConflicts
-          ? `Fundamental bias (${bias}) conflicts with the 1H trend (${oneHour.trend}).`
-          : `Fundamental bias (${bias}) does not conflict with the 1H trend.`,
+          ? `Fundamental bias (${bias}) conflicts with the 1H setup (${signalDirection}).`
+          : `Fundamental bias (${bias}) does not conflict with the 1H setup.`,
     },
   ];
 
@@ -318,24 +421,28 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
   const passedChecks = checks.filter((check) => check.passed);
 
   const signal =
-    failedChecks.length === 0 &&
-    oneHour.signal !== "NO TRADE"
-      ? oneHour.signal
+    failedChecks.length === 0 && technicalSetupValid
+      ? technicalSignal
       : "NO TRADE";
 
   const reason =
     signal !== "NO TRADE"
-      ? `All ${checks.length} required checks passed.`
-      : failedChecks.length > 0
+      ? fundamentalsComplete
+        ? "Technical setup confirmed, 4H context does not oppose it, and fundamental checks passed."
+        : "Technical-only setup confirmed. Fundamental data is incomplete and calendar risk may remain unverified."
+      : failedChecks.length
         ? failedChecks.map((check) => check.detail).join(" ")
-        : oneHour.reason || "The technical setup did not produce a trade signal.";
+        : oneHour.reason || "No trade setup is confirmed.";
 
   return {
     signal,
     reason,
-    aligned,
-    technicalSetupValid,
+    aligned:
+      oneHour.trend === fourHour.trend &&
+      oneHour.trend !== "mixed",
+    technicalSetupValid: Boolean(technicalSetupValid),
     fundamentalsComplete,
+    analysisMode,
     eventRisk,
     bias,
     checks,

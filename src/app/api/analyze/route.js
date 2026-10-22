@@ -38,19 +38,45 @@ async function getEconomicEvents() {
   return data.events;
 }
 
-export async function POST(request) {
+export async function POST() {
   try {
-    const [oneHourCandles, fourHourCandles, events] =
+    const [oneHourCandles, fourHourCandles, calendarResult] =
       await Promise.all([
         getCandles("1h", 250),
         getCandles("4h", 250),
-        getEconomicEvents(),
+        getEconomicEvents()
+          .then((events) => ({
+            available: true,
+            events,
+            error: null,
+          }))
+          .catch((error) => ({
+            available: false,
+            events: [],
+            error: error.message || "Economic calendar unavailable",
+          })),
       ]);
 
     const oneHour = analyzeStructure(oneHourCandles);
     const fourHour = analyzeStructure(fourHourCandles);
 
-   const fundamentals = assessAutomaticFundamentals(events);
+    const fundamentals = calendarResult.available
+      ? assessAutomaticFundamentals(calendarResult.events)
+      : {
+          source: "Finance Calendar",
+          mode: "automatic",
+          bias: "unknown",
+          eventRisk: "unknown",
+          calendarAvailable: false,
+          calendarCoverage: "unverified",
+          upcomingHighImpactEvents: [],
+          interpretations: [],
+          complete: false,
+          note: calendarResult.error,
+          caution:
+            "The economic calendar could not be retrieved. Event risk is unknown.",
+        };
+
     const combined = combineAnalysis(
       oneHour,
       fourHour,
@@ -72,19 +98,56 @@ export async function POST(request) {
             takeProfits: oneHour.takeProfits,
           };
 
-    return NextResponse.json({
+    const latestOneHourCandle = oneHourCandles.at(-1);
+    const latestFourHourCandle = fourHourCandles.at(-1);
+
+    const responseData = {
       generatedAt: new Date().toISOString(),
       symbol: "EUR/USD",
-      source: "Twelve Data + Finance Calendar",
+      source: calendarResult.available
+        ? "Twelve Data + Finance Calendar"
+        : "Twelve Data; Finance Calendar unavailable",
       liveData: true,
+
+      // Technical analysis results.
       oneHour,
       fourHour,
       fundamentals,
       combined,
+      analysisMode: combined.analysisMode,
       trade,
+
+      // Diagnostic information for checking dashboard consistency.
+      dataDiagnostics: {
+        oneHour: {
+          candleCount: oneHourCandles.length,
+          latestCandleTime: latestOneHourCandle.time,
+          latestCandleClose: latestOneHourCandle.close,
+          analysisEntry: oneHour.entry,
+          candleMatchesAnalysisEntry:
+            latestOneHourCandle.close === oneHour.entry,
+        },
+        fourHour: {
+          candleCount: fourHourCandles.length,
+          latestCandleTime: latestFourHourCandle.time,
+          latestCandleClose: latestFourHourCandle.close,
+        },
+        signal: combined.signal,
+        calendarAvailable: fundamentals.calendarAvailable ?? true,
+        fundamentalsComplete: combined.fundamentalsComplete,
+        eventRisk: fundamentals.eventRisk,
+      },
+
       caveat:
-        "Rule-based educational analysis. Economic surprises are simplified indicators, not verified predictions or financial advice.",
-    });
+        "Rule-based educational analysis. The 1H completed candle is the setup reference; the displayed entry is not a guarantee of an executable market price. Fundamental completeness and calendar risk must be evaluated according to the configured trading rules.",
+    };
+
+    console.log(
+      "NSB analysis diagnostics:",
+      JSON.stringify(responseData.dataDiagnostics, null, 2)
+    );
+
+    return NextResponse.json(responseData);
   } catch (error) {
     console.error("Analysis failed:", error);
 
@@ -92,9 +155,9 @@ export async function POST(request) {
       {
         error:
           error.message ||
-          "Analysis failed. Verify market-data and calendar availability.",
+          "Analysis failed. Verify that market data is available.",
       },
-      { status: error.status || 502 }
+      { status: 502 }
     );
   }
 }

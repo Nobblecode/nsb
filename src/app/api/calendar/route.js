@@ -2,74 +2,145 @@
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const CALENDAR_URL =
+  "https://www.financecalendar.com/wp-json/fc/v1/calendar";
+
+function normalizeImpact(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
 
 export async function GET(request) {
+  const requestId = crypto.randomUUID();
+
   try {
     const incomingUrl = new URL(request.url);
-    const impact = incomingUrl.searchParams.get("impact") || "all";
-
-    const url = new URL(
-      "https://www.financecalendar.com/wp-json/fc/v1/calendar"
+    const requestedImpact = normalizeImpact(
+      incomingUrl.searchParams.get("impact") || "all"
     );
 
+    const impact = ["all", "high", "medium", "low"].includes(
+      requestedImpact
+    )
+      ? requestedImpact
+      : "all";
+
+    const url = new URL(CALENDAR_URL);
     url.searchParams.set("country", "US,EU");
     url.searchParams.set("tz", "Africa/Lagos");
     url.searchParams.set("limit", "100");
 
-    if (["high", "medium", "low"].includes(impact)) {
-      url.searchParams.set("impact", impact);
-    }
-
     const response = await fetch(url.toString(), {
       cache: "no-store",
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
-      throw new Error(
-        `Calendar provider returned HTTP ${response.status}`
+      console.error("Calendar provider HTTP error:", {
+        requestId,
+        status: response.status,
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          requestId,
+          error: `Finance Calendar returned HTTP ${response.status}. Please try again later.`,
+          providerStatus: response.status,
+        },
+        { status: 502 }
       );
     }
 
     const data = await response.json();
 
     if (!data || !Array.isArray(data.events)) {
-      throw new Error(
-        "Calendar provider returned an unexpected response format"
+      console.error("Unexpected calendar response:", {
+        requestId,
+        responseKeys:
+          data && typeof data === "object"
+            ? Object.keys(data)
+            : [],
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          requestId,
+          error:
+            "Finance Calendar returned an unexpected response. Please try again later.",
+        },
+        { status: 502 }
       );
     }
 
-    // Temporary debugging: inspect the first event.
-    console.log(
-      "Finance Calendar sample event:",
-      JSON.stringify(data.events[0] ?? null, null, 2)
-    );
+    // Apply the selected filter locally so it does not depend on
+    // whether the upstream provider supports the impact parameter.
+    const events =
+      impact === "all"
+        ? data.events
+        : data.events.filter(
+            (event) => normalizeImpact(event.impact) === impact
+          );
 
-    return NextResponse.json({
-      success: true,
-      source: "Finance Calendar",
-      fetchedAt: new Date().toISOString(),
-      eventCount: data.events.length,
-      events: data.events,
-      attribution: data.attribution || {
-        source: "financecalendar.com",
-        url: "https://www.financecalendar.com/",
-      },
-      coverageVerified: false,
-      note:
-        "Events were retrieved successfully, but calendar completeness has not been verified.",
+    const fetchedAt = new Date().toISOString();
+
+    console.info("Calendar request completed:", {
+      requestId,
+      totalEvents: data.events.length,
+      filteredEvents: events.length,
+      impact,
+      fetchedAt,
     });
+
+    return NextResponse.json(
+      {
+        success: true,
+        requestId,
+        source: "Finance Calendar",
+        fetchedAt,
+        eventCount: events.length,
+        totalEventCount: data.events.length,
+        impactFilter: impact,
+        events,
+        attribution: data.attribution || {
+          source: "financecalendar.com",
+          url: "https://www.financecalendar.com/",
+        },
+        coverageVerified: false,
+        providerDataUpdatedAt:
+          data.updated_at ||
+          data.last_updated ||
+          data.updatedAt ||
+          null,
+        note:
+          "Fetch time indicates when NSB received this response. The provider's underlying data-update time may be unavailable, and calendar completeness has not been verified.",
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, max-age=0",
+        },
+      }
+    );
   } catch (error) {
-    console.error("Economic calendar error:", error);
+    const timedOut =
+      error?.name === "TimeoutError" ||
+      error?.name === "AbortError";
+
+    console.error("Economic calendar request failed:", {
+      requestId,
+      name: error?.name,
+      message: error?.message,
+    });
 
     return NextResponse.json(
       {
         success: false,
-        error:
-          error.name === "TimeoutError"
-            ? "The economic calendar request timed out. Try again."
-            : error.message ||
-              "Unable to retrieve economic calendar data.",
+        requestId,
+        error: timedOut
+          ? "The economic calendar request timed out. Check your connection and try again."
+          : "The economic calendar could not be reached. Please try again later.",
       },
       { status: 502 }
     );

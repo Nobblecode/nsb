@@ -308,36 +308,20 @@ export function assessAutomaticFundamentals(
       item.minutesAway <= coverageWindowMinutes
   );
 
+ 
   const calendarCoverage = hasNearTermEvents
     ? "near-term-events-found-unverified"
     : "insufficient";
 
-  
-let eventRisk = "unknown";
+  // Only report high risk when a qualifying event was found.
+  // No event found does not prove that calendar coverage is complete.
+  const eventRisk =
+    upcomingHighImpactEvents.length > 0 ? "high" : "unknown";
 
-if (upcomingHighImpactEvents.length > 0) {
-  eventRisk = "high";
-} else {
-  // We have not independently verified calendar completeness.
-  // Do not label the market as low-risk based only on returned events.
-  eventRisk = "unknown";
-}
-
-const complete =
-  hasUsableSurprises &&
-  hasNearTermEvents &&
-  eventRisk !== "unknown";
-
-
-  if (upcomingHighImpactEvents.length > 0) {
-    eventRisk = "high";
-  } else if (hasNearTermEvents) {
-    // This is a limited assessment of returned data, not proof
-    // that the next hour is free of high-impact releases.
-    eventRisk = "low";
-  }
-
- 
+  // Fundamental direction can be usable even when the calendar's
+  // overall coverage has not been independently verified.
+  const complete =
+    hasUsableSurprises && hasNearTermEvents;
 
   let note;
 
@@ -350,7 +334,7 @@ const complete =
   } else {
     note =
       `Interpreted ${interpretations.length} recent economic release(s). ` +
-      "The bias is a simplified estimate and calendar completeness has not been verified.";
+      "Fundamental bias is a simplified estimate; calendar completeness has not been verified.";
   }
 
   return {
@@ -367,8 +351,6 @@ const complete =
     caution:
       eventRisk === "high"
         ? "A high-impact EUR/USD event appears scheduled within the next 60 minutes. NSB should block new setups."
-        : eventRisk === "unknown"
-          ? "Event risk cannot be verified from the available calendar data."
-          : "No qualifying high-impact event was found within the next hour in the returned data. This does not guarantee low volatility or complete calendar coverage.",
+        : "Calendar coverage is unverified. The absence of a detected high-impact event does not establish that the market is low-risk.",
   };
 }

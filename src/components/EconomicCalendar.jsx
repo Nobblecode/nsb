@@ -4,7 +4,10 @@
 import { useCallback, useEffect, useState } from "react";
 
 function formatEventTime(event) {
-  const value = event.time_local || event.release_at_utc || event.time_utc;
+  const value =
+    event.time_local ||
+    event.release_at_utc ||
+    event.time_utc;
 
   if (!value) return event.date || "Time not available";
 
@@ -21,12 +24,26 @@ function formatEventTime(event) {
   }).format(parsed);
 }
 
+function formatTimestamp(value) {
+  if (!value) return "Unavailable";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "Unavailable";
+
+  return date.toLocaleString("en-GB", {
+    timeZone: "Africa/Lagos",
+  });
+}
+
 function impactStyle(impact) {
-  if (impact === "high") {
+  const level = String(impact ?? "").toLowerCase();
+
+  if (level === "high") {
     return "border-red-500/40 bg-red-500/10 text-red-300";
   }
 
-  if (impact === "medium") {
+  if (level === "medium") {
     return "border-amber-500/40 bg-amber-500/10 text-amber-300";
   }
 
@@ -37,37 +54,58 @@ export default function EconomicCalendar() {
   const [events, setEvents] = useState([]);
   const [impact, setImpact] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState("");
+  const [providerUpdatedAt, setProviderUpdatedAt] = useState(null);
 
-  const loadCalendar = useCallback(async () => {
+  const loadCalendar = useCallback(async ({ manual = false } = {}) => {
+    if (manual) {
+      setRefreshing(true);
+    } else if (events.length === 0) {
+      setLoading(true);
+    }
+
+    setError("");
+
     try {
-      setError("");
-
       const response = await fetch(
-        `/api/calendar?impact=${impact}`,
-        { cache: "no-store" }
+        `/api/calendar?impact=${encodeURIComponent(impact)}`,
+        {
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        }
       );
 
       const data = await response.json();
 
       if (!response.ok || !data.success) {
-        throw new Error(data.error || "Could not load economic calendar.");
+        throw new Error(
+          data.error || `Calendar request failed (${response.status}).`
+        );
       }
 
-      setEvents(data.events || []);
-      setUpdatedAt(data.fetchedAt || "");
+      setEvents(Array.isArray(data.events) ? data.events : []);
+      setUpdatedAt(data.fetchedAt || new Date().toISOString());
+      setProviderUpdatedAt(data.providerDataUpdatedAt || null);
     } catch (err) {
-      setError(err.message || "Calendar unavailable.");
+      setError(
+        err.message || "Calendar unavailable. Please try again."
+      );
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }, [impact]);
+  }, [impact]); // Filter changes request the corresponding event list.
 
   useEffect(() => {
     loadCalendar();
 
-    const timer = setInterval(loadCalendar, 5 * 60 * 1000);
+    const timer = setInterval(() => {
+      loadCalendar();
+    }, 5 * 60 * 1000);
 
     return () => clearInterval(timer);
   }, [loadCalendar]);
@@ -76,21 +114,19 @@ export default function EconomicCalendar() {
     <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">
-            Economic Calendar
-          </h2>
+          <h2 className="text-lg font-semibold">Economic Calendar</h2>
           <p className="mt-1 text-sm text-slate-400">
-            EUR/USD events · Times shown in Lagos time
+            US and EU events · Times shown in Lagos time
           </p>
         </div>
 
         <button
           type="button"
-          onClick={loadCalendar}
-          disabled={loading}
+          onClick={() => loadCalendar({ manual: true })}
+          disabled={loading || refreshing}
           className="rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50"
         >
-          {loading ? "Loading..." : "Refresh"}
+          {refreshing ? "Refreshing..." : loading ? "Loading..." : "Refresh calendar"}
         </button>
       </div>
 
@@ -115,11 +151,17 @@ export default function EconomicCalendar() {
 
       {error && (
         <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-          {error}
+          <p>{error}</p>
+          {events.length > 0 && (
+            <p className="mt-1 text-xs">
+              Previously loaded events are still displayed. They may be outdated.
+            </p>
+          )}
           <button
             type="button"
-            onClick={loadCalendar}
-            className="ml-2 underline"
+            onClick={() => loadCalendar({ manual: true })}
+            disabled={refreshing}
+            className="mt-2 underline disabled:opacity-50"
           >
             Try again
           </button>
@@ -134,24 +176,28 @@ export default function EconomicCalendar() {
 
       {!loading && !error && events.length === 0 && (
         <p className="mt-5 text-sm text-slate-400">
-          No events were returned for these filters.
+          No events were returned for this filter. This does not confirm that no economic releases are scheduled.
         </p>
       )}
 
       <div className="mt-4 space-y-3">
         {events.map((event, index) => (
           <article
-            key={event.id || `${event.title}-${index}`}
+            key={event.id || `${event.title || event.name || "event"}-${index}`}
             className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="font-medium">
-                  {event.title || event.name || event.series_name || "Economic event"}
+                  {event.title ||
+                    event.name ||
+                    event.series_name ||
+                    "Economic event"}
                 </p>
 
                 <p className="mt-1 text-sm text-slate-400">
-                  {formatEventTime(event)} · {event.country || "Currency unknown"}
+                  {formatEventTime(event)} ·{" "}
+                  {event.country || event.currency || "Currency unknown"}
                 </p>
               </div>
 
@@ -199,13 +245,14 @@ export default function EconomicCalendar() {
         ))}
       </div>
 
-      {updatedAt && (
-        <p className="mt-4 text-xs text-slate-500">
-          Last fetched: {new Date(updatedAt).toLocaleString("en-GB", {
-            timeZone: "Africa/Lagos",
-          })}
+      <div className="mt-4 space-y-1 text-xs text-slate-500">
+        <p>Last successful fetch: {formatTimestamp(updatedAt)}</p>
+        <p>Provider data update: {formatTimestamp(providerUpdatedAt)}</p>
+        <p>
+          A successful fetch does not guarantee the provider has published
+          the latest events, actuals, or forecasts.
         </p>
-      )}
+      </div>
 
       <p className="mt-4 border-t border-slate-800 pt-3 text-xs text-slate-400">
         Calendar data provided by{" "}
@@ -217,7 +264,7 @@ export default function EconomicCalendar() {
         >
           Finance Calendar
         </a>
-        . Events and forecasts may change; verify important releases.
+        . Verify important releases independently.
       </p>
     </section>
   );
