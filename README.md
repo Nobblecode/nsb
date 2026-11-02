@@ -34,3 +34,22 @@ Never commit `.env.local` or put the private key in a `NEXT_PUBLIC_` variable. I
 
 ## Deploy to Vercel
 Import the project into Vercel, add `TWELVE_DATA_API_KEY` in Project Settings → Environment Variables, then deploy. Keep the key server-only. After changing env vars, redeploy.
+
+## NSB safety and UI updates
+
+- Analysis History and Economic Calendar are independently collapsible to reduce dashboard clutter.
+- The breakout monitor uses direction-aware pip distance and indicates when a level has already been reached.
+- Pending automatic signal outcomes are re-evaluated every five minutes using subsequent 1H candles; the signal-generating candle is excluded. If stop and TP1 are both touched in the same candle, the result is treated conservatively as ambiguous and -1R.
+- Paper-trade creation is blocked when event risk is unknown or high, or when any mandatory validation check fails. Missing calendar coverage is not treated as proof that no event is scheduled.
+- High-impact event block window defaults to 60 minutes before and 30 minutes after a relevant EUR/USD event. These can be configured in `.env.local` with `NSB_EVENT_BLOCK_BEFORE_MINUTES` and `NSB_EVENT_BLOCK_AFTER_MINUTES`.
+- This is a rule-based educational tool, not a guarantee of predictive accuracy or profitability. Validate rules with out-of-sample backtesting and paper trading before relying on performance metrics.
+
+## Local verification
+
+```bash
+npm ci
+npm run build
+npm run dev
+```
+
+Keep `.env.local` private and never commit API keys. `.env.example` contains placeholders only.

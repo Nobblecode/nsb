@@ -118,25 +118,68 @@ export async function POST() {
       trade,
 
       // Diagnostic information for checking dashboard consistency.
-      dataDiagnostics: {
-        oneHour: {
-          candleCount: oneHourCandles.length,
-          latestCandleTime: latestOneHourCandle.time,
-          latestCandleClose: latestOneHourCandle.close,
-          analysisEntry: oneHour.entry,
-          candleMatchesAnalysisEntry:
-            latestOneHourCandle.close === oneHour.entry,
-        },
-        fourHour: {
-          candleCount: fourHourCandles.length,
-          latestCandleTime: latestFourHourCandle.time,
-          latestCandleClose: latestFourHourCandle.close,
-        },
-        signal: combined.signal,
-        calendarAvailable: fundamentals.calendarAvailable ?? true,
-        fundamentalsComplete: combined.fundamentalsComplete,
-        eventRisk: fundamentals.eventRisk,
-      },
+      
+dataDiagnostics: {
+  oneHour: {
+    candleCount: oneHourCandles.length,
+    latestCandleTime: latestOneHourCandle.time,
+    latestCandleClose: latestOneHourCandle.close,
+    analysisEntry: oneHour.entry,
+    candleMatchesAnalysisEntry:
+      latestOneHourCandle.close === oneHour.entry,
+
+    signal: oneHour.signal,
+    trend: oneHour.trend,
+    structureTrend: oneHour.structureTrend,
+    breakoutDirection: oneHour.breakoutDirection,
+    recentHigh: oneHour.recentHigh,
+    recentLow: oneHour.recentLow,
+    atr: oneHour.atr,
+    ema20: oneHour.ema20,
+    ema50: oneHour.ema50,
+    brokeHigh: oneHour.brokeHigh,
+    brokeLow: oneHour.brokeLow,
+    priceConfirmsBreakout: oneHour.priceConfirmsBreakout,
+    bodyConfirmsBreakout: oneHour.bodyConfirmsBreakout,
+    structuralConfirmation: oneHour.structuralConfirmation,
+    trendSupportsBreakout: oneHour.trendSupportsBreakout,
+    breakoutConfirmed: oneHour.breakoutConfirmed,
+    setupConfirmed: oneHour.setupConfirmed,
+    reason: oneHour.reason,
+    
+  potentialBuyLevel: oneHour.potentialBuyLevel,
+  potentialSellLevel: oneHour.potentialSellLevel,
+  distanceToBuy: oneHour.distanceToBuy,
+  distanceToSell: oneHour.distanceToSell,
+  pipsToBuy: oneHour.pipsToBuy,
+  pipsToSell: oneHour.pipsToSell,
+  breakoutStatus: oneHour.breakoutStatus,
+
+  },
+
+  fourHour: {
+    candleCount: fourHourCandles.length,
+    latestCandleTime: latestFourHourCandle.time,
+    latestCandleClose: latestFourHourCandle.close,
+    trend: fourHour.trend,
+    structureTrend: fourHour.structureTrend,
+    signal: fourHour.signal,
+  },
+
+  combined: {
+    signal: combined.signal,
+    reason: combined.reason,
+    checks: combined.checks,
+    failedChecks: combined.failedChecks,
+  },
+
+  trade,
+
+  calendarAvailable: fundamentals.calendarAvailable ?? true,
+  fundamentalsComplete: combined.fundamentalsComplete,
+  eventRisk: fundamentals.eventRisk,
+},
+
 
       caveat:
         "Rule-based educational analysis. The 1H completed candle is the setup reference; the displayed entry is not a guarantee of an executable market price. Fundamental completeness and calendar risk must be evaluated according to the configured trading rules.",

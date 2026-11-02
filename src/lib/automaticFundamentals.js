@@ -257,11 +257,22 @@ export function assessAutomaticFundamentals(
     }
   }
 
+  // Configurable fail-safe event window: default 60 minutes before
+  // and 30 minutes after a high-impact EUR/USD release.
+  const blockBeforeMinutes = Math.max(
+    0,
+    Number(process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES ?? 60) || 0
+  );
+  const blockAfterMinutes = Math.max(
+    0,
+    Number(process.env.NSB_EVENT_BLOCK_AFTER_MINUTES ?? 30) || 0
+  );
+
   const upcomingHighImpactEvents = datedEvents
     .filter(
       (item) =>
-        item.minutesAway >= 0 &&
-        item.minutesAway <= 60 &&
+        item.minutesAway >= -blockAfterMinutes &&
+        item.minutesAway <= blockBeforeMinutes &&
         item.impact === "high" &&
         item.currency
     )
@@ -350,7 +361,7 @@ export function assessAutomaticFundamentals(
     note,
     caution:
       eventRisk === "high"
-        ? "A high-impact EUR/USD event appears scheduled within the next 60 minutes. NSB should block new setups."
+        ? `A high-impact EUR/USD event is inside the configured event window (${blockBeforeMinutes} minutes before / ${blockAfterMinutes} minutes after). NSB should block new setups.`
         : "Calendar coverage is unverified. The absence of a detected high-impact event does not establish that the market is low-risk.",
   };
 }

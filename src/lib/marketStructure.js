@@ -144,8 +144,34 @@ export function analyzeStructure(candles) {
     ...comparisonCandles.map((candle) => candle.low)
   );
 
+  
   const brokeHigh = last.close > recentHigh;
   const brokeLow = last.close < recentLow;
+
+  // Breakout monitoring levels (diagnostics only).
+  // These do NOT change the existing signal rules.
+  const potentialBuyLevel = recentHigh;
+  const potentialSellLevel = recentLow;
+
+  const distanceToBuy = Math.max(
+    0,
+    potentialBuyLevel - last.close
+  );
+
+  const distanceToSell = Math.max(
+    0,
+    last.close - potentialSellLevel
+  );
+
+  const pipsToBuy = distanceToBuy * 10000;
+  const pipsToSell = distanceToSell * 10000;
+
+  const breakoutStatus = brokeHigh
+    ? "PRICE ABOVE RANGE — confirmation required"
+    : brokeLow
+      ? "PRICE BELOW RANGE — confirmation required"
+      : "PRICE INSIDE RANGE";
+
 
   const breakoutDirection = brokeHigh
     ? "bullish"
@@ -276,34 +302,61 @@ export function analyzeStructure(candles) {
     },
   ];
 
-  return {
-    signal,
-    trend,
-    structureTrend,
-    breakoutDirection,
-    structure,
-    reason,
-    checks,
-    entry: round(entry),
-    stopLoss: stopLoss == null ? null : round(stopLoss),
-    takeProfits: takeProfits.map((value) =>
-      value == null ? null : round(value)
-    ),
-    atr: round(atrValue),
-    ema20: round(ema20),
-    ema50: round(ema50),
-    lastCandleTime: last.time,
-    recentHigh: round(recentHigh),
-    recentLow: round(recentLow),
-    latestCandle: last,
-    confidenceScore,
-    confidenceNote:
-      "Heuristic confluence score, not a probability or proven win rate.",
-    swingHigh: lastSwingHigh ? round(lastSwingHigh.price) : null,
-    swingLow: lastSwingLow ? round(lastSwingLow.price) : null,
-    dataPoints: candles.length,
-    previousClose: previous.close,
-  };
+  
+return {
+  signal,
+  trend,
+  structureTrend,
+  breakoutDirection,
+  structure,
+  reason,
+  checks,
+
+  // Breakout diagnostics
+  recentHigh: round(recentHigh),
+  recentLow: round(recentLow),
+  brokeHigh,
+  brokeLow,
+  priceConfirmsBreakout,
+  bodyConfirmsBreakout,
+  structuralConfirmation,
+  trendSupportsBreakout,
+  breakoutConfirmed,
+  setupConfirmed,
+  
+  potentialBuyLevel: round(potentialBuyLevel),
+  potentialSellLevel: round(potentialSellLevel),
+  distanceToBuy: round(distanceToBuy),
+  distanceToSell: round(distanceToSell),
+  pipsToBuy: Number(pipsToBuy.toFixed(1)),
+  pipsToSell: Number(pipsToSell.toFixed(1)),
+  breakoutStatus,
+
+
+  // Trade levels
+  entry: round(entry),
+  stopLoss: stopLoss == null ? null : round(stopLoss),
+  takeProfits: takeProfits.map((value) =>
+    value == null ? null : round(value)
+  ),
+
+  // Indicator values
+  atr: round(atrValue),
+  ema20: round(ema20),
+  ema50: round(ema50),
+  lastCandleTime: last.time,
+  latestCandle: last,
+
+  // Confidence and market structure
+  confidenceScore,
+  confidenceNote:
+    "Heuristic confluence score, not a probability or proven win rate.",
+  swingHigh: lastSwingHigh ? round(lastSwingHigh.price) : null,
+  swingLow: lastSwingLow ? round(lastSwingLow.price) : null,
+  dataPoints: candles.length,
+  previousClose: previous.close,
+};
+
 }
 
 export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
@@ -344,7 +397,8 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     bias !== "neutral" &&
     bias !== signalDirection;
 
-  const eventRiskAcceptable = !highRisk;
+  // Unknown calendar coverage is not equivalent to a safe event window.
+  const eventRiskAcceptable = eventRisk !== "unknown" && !highRisk;
 
   const technicalSetupValid = Boolean(
     hasTechnicalSignal &&
@@ -402,7 +456,7 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
       detail: highRisk
         ? "A high-impact event is identified. NSB blocks new setups."
         : eventRisk === "unknown"
-          ? "Calendar risk is unverified. Technical-only analysis may proceed, but unexpected event risk remains."
+          ? "Calendar risk is unverified. New trade setups are blocked until event risk can be verified."
           : `Reported event risk is ${eventRisk}.`,
     },
     {
@@ -429,7 +483,7 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     signal !== "NO TRADE"
       ? fundamentalsComplete
         ? "Technical setup confirmed, 4H context does not oppose it, and fundamental checks passed."
-        : "Technical-only setup confirmed. Fundamental data is incomplete and calendar risk may remain unverified."
+        : "Technical-only setup confirmed. Fundamental data is incomplete; calendar risk was verified as acceptable."
       : failedChecks.length
         ? failedChecks.map((check) => check.detail).join(" ")
         : oneHour.reason || "No trade setup is confirmed.";
