@@ -225,6 +225,180 @@ Incomplete fundamentals may allow technical-only analysis, but unverified calend
 }
 
 
+function MarketStructureReport({ oneHour, fourHour, combined, symbol }) {
+  const precision =
+    symbol === "XAU/USD" ? 2 :
+    symbol === "USD/JPY" || symbol === "AUD/JPY" ? 3 : 5;
+
+  const formatPrice = (value) => {
+    if (value == null || !Number.isFinite(Number(value))) {
+      return "—";
+    }
+
+    return Number(value).toFixed(precision);
+  };
+
+  const formatDistance = (value) => {
+    if (value == null || !Number.isFinite(Number(value))) {
+      return "—";
+    }
+
+    return `${Number(value).toFixed(1)} ${
+      symbol === "XAU/USD" ? "points" : "pips"
+    }`;
+  };
+
+  const statusStyle = (value) => {
+    if (value === "bullish" || value === "aligned") {
+      return "text-emerald-300";
+    }
+
+    if (value === "bearish" || value === "conflicting") {
+      return "text-rose-300";
+    }
+
+    return "text-amber-200";
+  };
+
+  const timeframeCard = (label, data) => (
+    <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold text-white">{label} STRUCTURE</h3>
+        <span className={`text-sm font-bold uppercase ${statusStyle(data?.structureTrend)}`}>
+          {data?.structureTrend || "UNKNOWN"}
+        </span>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div>
+          <p className="text-xs text-slate-400">Swing high pattern</p>
+          <p className="mt-1 text-sm font-semibold capitalize text-slate-200">
+            {data?.swingHighPattern || "Unavailable"}
+          </p>
+        </div>
+
+        <div>
+          <p className="text-xs text-slate-400">Swing low pattern</p>
+          <p className="mt-1 text-sm font-semibold capitalize text-slate-200">
+            {data?.swingLowPattern || "Unavailable"}
+          </p>
+        </div>
+
+        <div>
+          <p className="text-xs text-slate-400">Recent support</p>
+          <p className="mt-1 font-semibold text-white tabular-nums">
+            {formatPrice(data?.support)}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {formatDistance(data?.supportDistancePips)} away
+          </p>
+        </div>
+
+        <div>
+          <p className="text-xs text-slate-400">Recent resistance</p>
+          <p className="mt-1 font-semibold text-white tabular-nums">
+            {formatPrice(data?.resistance)}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {formatDistance(data?.resistanceDistancePips)} away
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-[#26354c] pt-3">
+        <p className="text-xs text-slate-400">Price position</p>
+        <p className="mt-1 text-sm text-slate-200">
+          {data?.marketPosition || "Position unavailable"}
+        </p>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          {data?.approachingSupport && (
+            <span className="rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+              Approaching support
+            </span>
+          )}
+
+          {data?.approachingResistance && (
+            <span className="rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+              Approaching resistance
+            </span>
+          )}
+
+          {!data?.approachingSupport &&
+            !data?.approachingResistance && (
+              <span className="text-xs text-slate-500">
+                No approaching swing level reported
+              </span>
+            )}
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-lg bg-slate-800/50 p-3">
+        <p className="text-xs text-slate-400">Structure interpretation</p>
+        <p className="mt-1 text-xs leading-5 text-slate-300">
+          {data?.marketStructureSummary || "No structure summary available."}
+        </p>
+      </div>
+    </div>
+  );
+
+  return (
+    <section className="panel mt-5 p-4 md:p-5">
+      <div className="mb-4">
+        <h2 className="text-lg font-semibold">
+          Multi-Timeframe Market Structure
+        </h2>
+        <p className="mt-1 text-xs leading-5 text-slate-400">
+          Swing patterns, recent support and resistance, and price position
+          across the 1H and 4H timeframes.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {timeframeCard("1H", oneHour)}
+        {timeframeCard("4H", fourHour)}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
+        <h3 className="font-semibold text-white">
+          Timeframe alignment assessment
+        </h3>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <p className="text-xs text-slate-400">EMA trend alignment</p>
+            <p className={`mt-1 font-bold uppercase ${statusStyle(combined?.emaAlignment)}`}>
+              {combined?.emaAlignment || "Unavailable"}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-xs text-slate-400">Swing structure alignment</p>
+            <p className={`mt-1 font-bold uppercase ${statusStyle(combined?.structureAlignment)}`}>
+              {combined?.structureAlignment || "Unavailable"}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 border-t border-[#26354c] pt-3">
+          <p className="text-xs text-slate-400">
+            Breakout proximity (1H)
+          </p>
+          <p className="mt-1 text-sm font-semibold text-white">
+            {oneHour?.breakoutProximity || "Unavailable"}
+          </p>
+        </div>
+
+        <p className="mt-3 text-xs leading-5 text-slate-500">
+          Support and resistance represent recent detected swing points.
+          They are not guaranteed reversal levels or independently verified
+          multi-touch price zones.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 
 function BreakoutMonitor({ diagnostics, oneHour }) {
   const closeValue = diagnostics?.latestCandleClose;
@@ -687,7 +861,8 @@ function SignalPerformanceDashboard({
 
 
 export default function Home() {
-  const [interval, setInterval] = useState("1h");
+ const [interval, setInterval] = useState("1h");
+const [symbol, setSymbol] = useState("EUR/USD");
 
   const [market, setMarket] = useState(null);
   const [marketError, setMarketError] = useState("");
@@ -901,7 +1076,7 @@ setSignalPerformance(
 
     try {
       const response = await fetch(
-        `/api/market?interval=${encodeURIComponent(tf)}`,
+        `/api/market?interval=${encodeURIComponent(tf)}&symbol=${encodeURIComponent(symbol)}`,
         { cache: "no-store" }
       );
 
@@ -925,7 +1100,7 @@ setSignalPerformance(
     } finally {
       setLoadingMarket(false);
     }
-  }, [interval, evaluateSignalOutcomes]);
+  }, [interval, evaluateSignalOutcomes, symbol]);
 
   useEffect(() => {
     fetchMarket(interval);
@@ -967,6 +1142,7 @@ const recordAnalysis = (result) => {
 
   const record = {
     id: crypto.randomUUID(),
+    symbol: result.symbol || symbol,
     analyzedAt: new Date().toISOString(),
 
     signal: validTrade ? finalSignal : "NO TRADE",
@@ -1106,7 +1282,7 @@ const saveEligibleSignal = (result) => {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ symbol }),
         cache: "no-store",
       });
 
@@ -1189,6 +1365,7 @@ await evaluateSignalOutcomes();
 
   const position = useMemo(() => {
     if (
+      symbol !== "EUR/USD" ||
       !trade ||
       !["BUY", "SELL"].includes(trade.signal) ||
       trade.entry == null ||
@@ -1259,6 +1436,7 @@ await evaluateSignalOutcomes();
 
     const paperTrade = {
       id: crypto.randomUUID(),
+      symbol,
       createdAt: new Date().toISOString(),
       signal: trade.signal,
       entry: trade.entry,
@@ -1323,12 +1501,28 @@ await evaluateSignalOutcomes();
             </h1>
 
             <p className="mt-2 text-sm text-slate-400">
-              EUR/USD · 1H technical setup + 4H context · paper trading only
+              {symbol} · 1H technical setup + 4H context · paper trading only
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="pill">
+  <select
+    className="rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-sm text-white"
+    value={symbol}
+    onChange={(event) => {
+      setSymbol(event.target.value);
+      setAnalysis(null);
+      setAnalysisError("");
+    }}
+    aria-label="Select trading instrument"
+  >
+    <option value="EUR/USD">EUR/USD</option>
+    <option value="XAU/USD">XAU/USD — Gold</option>
+    <option value="USD/JPY">USD/JPY</option>
+    <option value="AUD/JPY">AUD/JPY</option>
+  </select>
+
+  <span className="pill">
               <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-400" />
               PAPER MODE
             </span>
@@ -1350,7 +1544,7 @@ await evaluateSignalOutcomes();
         <section className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
           <div className="kpi">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400">EUR/USD last close</span>
+              <span className="text-xs text-slate-400">{symbol} last close</span>
               <Activity size={16} className="text-blue-300" />
             </div>
 
@@ -1475,7 +1669,7 @@ await evaluateSignalOutcomes();
                   <Play size={16} />
                 )}
 
-                {analyzing ? "Analyzing market and fundamentals..." : "Analyze EUR/USD"}
+                {analyzing ? "Analyzing market and fundamentals..." : `Analyze ${symbol}`}
               </button>
 
               {analysisError && (
@@ -1552,7 +1746,7 @@ await evaluateSignalOutcomes();
               <Crosshair className="mx-auto mb-3 text-slate-500" size={28} />
               <p className="font-semibold">No analysis report yet</p>
               <p className="mt-1 text-sm text-slate-500">
-                Click Analyze EUR/USD to retrieve the latest analysis.
+                Click Analyze {symbol} to retrieve the latest analysis.
               </p>
             </div>
           ) : (
@@ -1765,6 +1959,13 @@ await evaluateSignalOutcomes();
           )}
         </section>
 
+      <MarketStructureReport
+  oneHour={oneHour}
+  fourHour={fourHour}
+  combined={combined}
+  symbol={symbol}
+/>  
+
         <BreakoutMonitor
   diagnostics={oneHourDiagnostics}
   oneHour={oneHour}
@@ -1819,7 +2020,7 @@ await evaluateSignalOutcomes();
               <Activity className="mx-auto mb-3 text-slate-500" size={26} />
               <p className="font-semibold">No analysis history yet</p>
               <p className="mt-1 text-sm text-slate-500">
-                Click Analyze EUR/USD to save the next decision here.
+                Click Analyze {symbol} to save the next decision here.
               </p>
             </div>
           ) : (
@@ -1832,6 +2033,9 @@ await evaluateSignalOutcomes();
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-lg bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-200">
+  {item.symbol || "EUR/USD"}
+</span>
                         <span
                           className={`rounded-lg px-3 py-1 text-xs font-bold ${
                             item.signal === "BUY"
@@ -1982,6 +2186,9 @@ await evaluateSignalOutcomes();
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-2">
+                        <span className="rounded-lg bg-blue-500/10 px-2 py-1 text-xs font-semibold text-blue-200">
+  {item.symbol || "EUR/USD"}
+</span>
                         <span
                           className={`font-bold ${
                             item.signal === "BUY"

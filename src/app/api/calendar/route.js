@@ -31,11 +31,26 @@ export async function GET(request) {
     url.searchParams.set("tz", "Africa/Lagos");
     url.searchParams.set("limit", "100");
 
-    const response = await fetch(url.toString(), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(15000),
-    });
+    const apiKey = process.env.FC_API_KEY;
 
+if (!apiKey) {
+  return NextResponse.json(
+    {
+      success: false,
+      error: "Finance Calendar API key is missing. Check FC_API_KEY in .env.local.",
+    },
+    { status: 500 }
+  );
+}
+
+const response = await fetch(url.toString(), {
+  cache: "no-store",
+  signal: AbortSignal.timeout(15000),
+  headers: {
+    "X-API-Key": apiKey,
+    Accept: "application/json",
+  },
+});
     if (!response.ok) {
       console.error("Calendar provider HTTP error:", {
         requestId,

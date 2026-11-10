@@ -2,6 +2,13 @@
 const normalize = (value) =>
   String(value ?? "").trim().toLowerCase();
 
+const INSTRUMENT_CURRENCIES = {
+  "EUR/USD": { base: "EUR", quote: "USD" },
+  "XAU/USD": { base: "XAU", quote: "USD" },
+  "USD/JPY": { base: "USD", quote: "JPY" },
+  "AUD/JPY": { base: "AUD", quote: "JPY" },
+};
+
 function getTitle(event) {
   return (
     event.title ||
@@ -17,20 +24,20 @@ function getCurrency(event) {
   );
 
   if (
-    /\b(usd|usa|us|united states|united states of america)\b/.test(
-      value
-    )
-  ) {
-    return "USD";
-  }
+    /\b(usd|usa|us|united states|united states of america)\b/.test(value)
+  ) return "USD";
 
   if (
-    /\b(eur|euro|eurozone|euro area|european union|eu)\b/.test(
-      value
-    )
-  ) {
-    return "EUR";
-  }
+    /\b(eur|euro|eurozone|euro area|european union|eu)\b/.test(value)
+  ) return "EUR";
+
+  if (
+    /\b(jpy|japan|japanese yen)\b/.test(value)
+  ) return "JPY";
+
+  if (
+    /\b(aud|australia|australian dollar)\b/.test(value)
+  ) return "AUD";
 
   return null;
 }
@@ -46,8 +53,6 @@ function getEventDate(event) {
 
   let dateValue = value;
 
-  // Interpret a timezone-free date/time as Lagos local time.
-  // Timestamps with Z or an explicit offset remain unchanged.
   if (
     typeof dateValue === "string" &&
     /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(
@@ -68,11 +73,7 @@ function getImpact(event) {
   );
 
   if (/high|3|red/.test(value)) return "high";
-
-  if (/medium|moderate|2|orange|yellow/.test(value)) {
-    return "medium";
-  }
-
+  if (/medium|moderate|2|orange|yellow/.test(value)) return "medium";
   if (/low|1|green/.test(value)) return "low";
 
   return "unknown";
@@ -89,8 +90,6 @@ function getNumericValue(value) {
     return null;
   }
 
-  // Remove common formatting characters while preserving
-  // decimal points and negative signs.
   const cleaned = String(value)
     .replace(/,/g, "")
     .replace(/%/g, "")
@@ -112,11 +111,10 @@ function getActual(event) {
 }
 
 function getForecast(event) {
-  // Finance Calendar uses "consensus" for the market forecast.
   return getNumericValue(
     event.consensus ??
-      event.forecast ??
-      event.forecast_value
+    event.forecast ??
+    event.forecast_value
   );
 }
 
@@ -124,10 +122,7 @@ function getSurprise(event) {
   const actual = getActual(event);
   const forecast = getForecast(event);
 
-  if (actual === null || forecast === null) {
-    return null;
-  }
-
+  if (actual === null || forecast === null) return null;
   if (actual === forecast) return 0;
 
   return actual > forecast ? 1 : -1;
@@ -138,7 +133,6 @@ function interpretEvent(event) {
   const currency = getCurrency(event);
   const surprise = getSurprise(event);
 
-  // Do not infer a bias without both actual and forecast data.
   if (!currency || surprise === null) return null;
 
   let direction;
@@ -148,15 +142,12 @@ function interpretEvent(event) {
       title
     )
   ) {
-    // Higher unemployment or claims are generally weaker
-    // for the currency.
     direction = -surprise;
   } else if (
     /cpi|consumer price index|inflation rate|core inflation/.test(
       title
     )
   ) {
-    // Simplified interpretation; central-bank context matters.
     direction = surprise;
   } else if (
     /gdp|retail sales|employment change|nonfarm payroll|non-farm payroll|pmi|purchasing managers|industrial production|average hourly earnings/.test(
@@ -165,7 +156,6 @@ function interpretEvent(event) {
   ) {
     direction = surprise;
   } else {
-    // Unsupported event types do not contribute to the bias.
     return null;
   }
 
@@ -186,11 +176,15 @@ function interpretEvent(event) {
 
 export function assessAutomaticFundamentals(
   events = [],
+  symbol = "EUR/USD",
   now = new Date()
 ) {
+  const instrument = INSTRUMENT_CURRENCIES[symbol];
+
   const emptyResult = {
     source: "Finance Calendar",
     mode: "automatic",
+    symbol,
     bias: "unknown",
     eventRisk: "unknown",
     calendarAvailable: false,
@@ -203,6 +197,13 @@ export function assessAutomaticFundamentals(
     caution:
       "Missing or incomplete calendar data must not be treated as neutral or safe.",
   };
+
+  if (!instrument) {
+    return {
+      ...emptyResult,
+      note: `No fundamental currency mapping is configured for ${symbol}.`,
+    };
+  }
 
   if (!Array.isArray(events) || events.length === 0) {
     return emptyResult;
@@ -221,6 +222,11 @@ export function assessAutomaticFundamentals(
   const minutesInDay = 60 * 24;
   const coverageWindowMinutes = 7 * minutesInDay;
 
+  const relevantCurrencies =
+    instrument.base === "XAU"
+      ? ["USD"]
+      : [instrument.base, instrument.quote];
+
   const datedEvents = [];
   const interpretations = [];
 
@@ -235,6 +241,10 @@ export function assessAutomaticFundamentals(
     const impact = getImpact(event);
     const currency = getCurrency(event);
 
+    if (!currency || !relevantCurrencies.includes(currency)) {
+      continue;
+    }
+
     datedEvents.push({
       event,
       date,
@@ -243,29 +253,28 @@ export function assessAutomaticFundamentals(
       currency,
     });
 
-    // Interpret only supported releases from the last 24 hours.
     if (
       minutesAway < 0 &&
-      minutesAway >= -minutesInDay &&
-      currency
+      minutesAway >= -minutesInDay
     ) {
       const result = interpretEvent(event);
 
-      if (result) {
-        interpretations.push(result);
-      }
+      if (result) interpretations.push(result);
     }
   }
 
-  // Configurable fail-safe event window: default 60 minutes before
-  // and 30 minutes after a high-impact EUR/USD release.
   const blockBeforeMinutes = Math.max(
     0,
-    Number(process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES ?? 60) || 0
+    Number(
+      process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES ?? 60
+    ) || 0
   );
+
   const blockAfterMinutes = Math.max(
     0,
-    Number(process.env.NSB_EVENT_BLOCK_AFTER_MINUTES ?? 30) || 0
+    Number(
+      process.env.NSB_EVENT_BLOCK_AFTER_MINUTES ?? 30
+    ) || 0
   );
 
   const upcomingHighImpactEvents = datedEvents
@@ -273,8 +282,7 @@ export function assessAutomaticFundamentals(
       (item) =>
         item.minutesAway >= -blockAfterMinutes &&
         item.minutesAway <= blockBeforeMinutes &&
-        item.impact === "high" &&
-        item.currency
+        item.impact === "high"
     )
     .map((item) => ({
       title: getTitle(item.event),
@@ -284,25 +292,35 @@ export function assessAutomaticFundamentals(
       releaseAt: item.date.toISOString(),
     }));
 
-  let eurScore = 0;
-  let usdScore = 0;
+  const currencyScores = {};
 
-  for (const item of interpretations) {
-    if (item.currency === "EUR") {
-      eurScore += item.direction;
-    }
-
-    if (item.currency === "USD") {
-      usdScore += item.direction;
-    }
+  for (const currency of relevantCurrencies) {
+    currencyScores[currency] = 0;
   }
 
-  const hasUsableSurprises = interpretations.length > 0;
-  const difference = eurScore - usdScore;
+  for (const item of interpretations) {
+    currencyScores[item.currency] += item.direction;
+  }
+
+  const hasBaseData =
+    instrument.base !== "XAU" &&
+    interpretations.some(
+      (item) => item.currency === instrument.base
+    );
+
+  const hasQuoteData = interpretations.some(
+    (item) => item.currency === instrument.quote
+  );
 
   let bias = "unknown";
 
-  if (hasUsableSurprises) {
+  // Both sides must have usable data before assigning
+  // a directional currency-pair bias.
+  if (hasBaseData && hasQuoteData) {
+    const difference =
+      currencyScores[instrument.base] -
+      currencyScores[instrument.quote];
+
     bias =
       difference > 0
         ? "bullish"
@@ -311,46 +329,45 @@ export function assessAutomaticFundamentals(
           : "neutral";
   }
 
-  // Finding events in the next seven days does NOT prove that
-  // the provider returned every relevant event.
   const hasNearTermEvents = datedEvents.some(
     (item) =>
       item.minutesAway >= 0 &&
       item.minutesAway <= coverageWindowMinutes
   );
 
- 
   const calendarCoverage = hasNearTermEvents
     ? "near-term-events-found-unverified"
     : "insufficient";
 
-  // Only report high risk when a qualifying event was found.
-  // No event found does not prove that calendar coverage is complete.
   const eventRisk =
-    upcomingHighImpactEvents.length > 0 ? "high" : "unknown";
+    upcomingHighImpactEvents.length > 0
+      ? "high"
+      : "unknown";
 
-  // Fundamental direction can be usable even when the calendar's
-  // overall coverage has not been independently verified.
-  const complete =
-    hasUsableSurprises && hasNearTermEvents;
+  // Retrieved events do not prove complete provider coverage.
+  // XAU also requires a separate gold-specific assessment.
+  const complete = false;
 
   let note;
 
-  if (!hasNearTermEvents) {
+  if (instrument.base === "XAU") {
     note =
-      "No dated events were found within the next seven days. Calendar coverage and event risk remain unverified.";
-  } else if (!hasUsableSurprises) {
+      "USD economic releases can be assessed, but this calendar does not provide a verified gold-specific fundamental assessment.";
+  } else if (!hasNearTermEvents) {
     note =
-      "Calendar events were retrieved, but no supported recent actual-versus-consensus surprises were available. Fundamental bias remains unknown.";
+      "No relevant dated events were found within the next seven days. Calendar coverage and event risk remain unverified.";
+  } else if (bias === "unknown") {
+    note =
+      "Relevant calendar events were retrieved, but usable actual-versus-consensus data for both currencies was not available. Fundamental bias remains unknown.";
   } else {
     note =
-      `Interpreted ${interpretations.length} recent economic release(s). ` +
-      "Fundamental bias is a simplified estimate; calendar completeness has not been verified.";
+      `Interpreted ${interpretations.length} recent economic release(s) for ${symbol}. The directional estimate is simplified and calendar completeness remains unverified.`;
   }
 
   return {
     source: "Finance Calendar",
     mode: "automatic",
+    symbol,
     bias,
     eventRisk,
     calendarAvailable: true,
@@ -359,9 +376,10 @@ export function assessAutomaticFundamentals(
     interpretations,
     complete,
     note,
+    currencyScores,
     caution:
       eventRisk === "high"
-        ? `A high-impact EUR/USD event is inside the configured event window (${blockBeforeMinutes} minutes before / ${blockAfterMinutes} minutes after). NSB should block new setups.`
+        ? `A relevant high-impact event is inside the configured event window (${blockBeforeMinutes} minutes before / ${blockAfterMinutes} minutes after). NSB should block new setups.`
         : "Calendar coverage is unverified. The absence of a detected high-impact event does not establish that the market is low-risk.",
   };
 }

@@ -3,6 +3,38 @@ const BASE_URL = "https://api.twelvedata.com/time_series";
 
 const CACHE_TTL_MS = 60_000;
 
+// Supported instruments and their Twelve Data symbols.
+export const INSTRUMENTS = {
+  "EUR/USD": {
+    symbol: "EUR/USD",
+    name: "Euro / US Dollar",
+    type: "forex",
+    pricePrecision: 5,
+    pipSize: 0.0001,
+  },
+  "XAU/USD": {
+    symbol: "XAU/USD",
+    name: "Gold / US Dollar",
+    type: "commodity",
+    pricePrecision: 2,
+    pipSize: 0.01,
+  },
+  "USD/JPY": {
+    symbol: "USD/JPY",
+    name: "US Dollar / Japanese Yen",
+    type: "forex",
+    pricePrecision: 3,
+    pipSize: 0.01,
+  },
+  "AUD/JPY": {
+    symbol: "AUD/JPY",
+    name: "Australian Dollar / Japanese Yen",
+    type: "forex",
+    pricePrecision: 3,
+    pipSize: 0.01,
+  },
+};
+
 const candleCache = new Map();
 const pendingRequests = new Map();
 
@@ -20,7 +52,6 @@ function getIntervalMs(interval) {
     h: 60 * 60_000,
     day: 24 * 60 * 60_000,
     week: 7 * 24 * 60 * 60_000,
-    // Calendar months have variable lengths; handle separately if needed.
     month: null,
   };
 
@@ -37,7 +68,28 @@ function parseUtcTime(time) {
   return Date.parse(`${time.replace(" ", "T")}Z`);
 }
 
-export async function getCandles(interval = "1h", outputsize = 250) {
+export async function getCandles(
+  interval = "1h",
+  outputsize = 250,
+  instrument = "EUR/USD"
+) {
+  // Also accept the instrument as the second argument for convenience.
+  if (typeof outputsize === "string") {
+    const suppliedInstrument = outputsize;
+    outputsize = typeof instrument === "number" ? instrument : 250;
+    instrument = suppliedInstrument;
+  }
+
+  const selectedInstrument = INSTRUMENTS[instrument];
+
+  if (!selectedInstrument) {
+    const error = new Error(
+      `Unsupported instrument: ${instrument}. Supported instruments: ${Object.keys(INSTRUMENTS).join(", ")}`
+    );
+    error.status = 400;
+    throw error;
+  }
+
   const apiKey = process.env.TWELVE_DATA_API_KEY;
 
   if (!apiKey) {
@@ -49,7 +101,9 @@ export async function getCandles(interval = "1h", outputsize = 250) {
   }
 
   const intervalMs = getIntervalMs(interval);
-  const cacheKey = `${interval}:${outputsize}`;
+
+  // Include instrument in the cache key to prevent cross-pair data mixing.
+  const cacheKey = `${selectedInstrument.symbol}:${interval}:${outputsize}`;
 
   const cached = candleCache.get(cacheKey);
 
@@ -64,7 +118,7 @@ export async function getCandles(interval = "1h", outputsize = 250) {
   const requestPromise = (async () => {
     const url = new URL(BASE_URL);
 
-    url.searchParams.set("symbol", "EUR/USD");
+    url.searchParams.set("symbol", selectedInstrument.symbol);
     url.searchParams.set("interval", interval);
     url.searchParams.set("outputsize", String(outputsize));
     url.searchParams.set("timezone", "UTC");
@@ -79,7 +133,7 @@ export async function getCandles(interval = "1h", outputsize = 250) {
 
     if (!response.ok) {
       const error = new Error(
-        `Twelve Data returned HTTP ${response.status}.`
+        `Twelve Data returned HTTP ${response.status} for ${selectedInstrument.symbol}.`
       );
       error.status = response.status;
       throw error;
@@ -87,14 +141,13 @@ export async function getCandles(interval = "1h", outputsize = 250) {
 
     if (!json || json.status === "error" || !Array.isArray(json.values)) {
       const error = new Error(
-        json?.message || "No candle data returned by Twelve Data."
+        json?.message ||
+        `No candle data returned by Twelve Data for ${selectedInstrument.symbol}.`
       );
 
       error.status = Number(json?.code) || 502;
       throw error;
     }
-
-    const now = Date.now();
 
     const candles = json.values
       .map((c) => ({
@@ -130,34 +183,35 @@ export async function getCandles(interval = "1h", outputsize = 250) {
         const candleStart = parseUtcTime(c.time);
         const candleEnd = candleStart + intervalMs;
 
-        return candleEnd <= now;
+        return candleEnd <= Date.now();
       })
       .reverse();
 
     // Ensure timestamps are strictly increasing.
     for (let i = 1; i < candles.length; i++) {
-      if (parseUtcTime(candles[i].time) <= parseUtcTime(candles[i - 1].time)) {
+      if (
+        parseUtcTime(candles[i].time) <=
+        parseUtcTime(candles[i - 1].time)
+      ) {
         throw new Error(
-          "Candle timestamps are duplicated or not in chronological order."
+          `Candle timestamps are duplicated or not chronological for ${selectedInstrument.symbol}.`
         );
       }
     }
 
     if (candles.length < 60) {
       const error = new Error(
-        `Only ${candles.length} completed, valid candles were returned for ${interval}; at least 60 are required.`
+        `Only ${candles.length} completed, valid candles were returned for ${selectedInstrument.symbol} ${interval}; at least 60 are required.`
       );
       error.status = 502;
       throw error;
     }
 
     console.log("Completed candle data:", {
+      instrument: selectedInstrument.symbol,
       interval,
       candleCount: candles.length,
       latestCompletedCandle: candles.at(-1),
-      latestCandleEndUtc: new Date(
-        parseUtcTime(candles.at(-1).time) + intervalMs
-      ).toISOString(),
     });
 
     candleCache.set(cacheKey, {

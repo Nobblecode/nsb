@@ -1,6 +1,9 @@
 
 import { NextResponse } from "next/server";
-import { getCandles } from "@/lib/marketData";
+import {
+  getCandles,
+  INSTRUMENTS,
+} from "@/lib/marketData";
 import {
   analyzeStructure,
   combineAnalysis,
@@ -9,18 +12,31 @@ import { assessAutomaticFundamentals } from "@/lib/automaticFundamentals";
 
 export const dynamic = "force-dynamic";
 
+
 async function getEconomicEvents() {
+  const apiKey = process.env.FC_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "Finance Calendar API key is missing. Check FC_API_KEY in .env.local."
+    );
+  }
+
   const url = new URL(
     "https://www.financecalendar.com/wp-json/fc/v1/calendar"
   );
 
-  url.searchParams.set("country", "US,EU");
+  url.searchParams.set("country", "US,EU,JP,AU");
   url.searchParams.set("tz", "Africa/Lagos");
   url.searchParams.set("limit", "100");
 
   const response = await fetch(url.toString(), {
     cache: "no-store",
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(15000),
+    headers: {
+      "X-API-Key": apiKey,
+      Accept: "application/json",
+    },
   });
 
   if (!response.ok) {
@@ -31,51 +47,87 @@ async function getEconomicEvents() {
 
   const data = await response.json();
 
-  if (!Array.isArray(data.events)) {
-    throw new Error("Economic calendar returned an unexpected format");
+  if (!data || !Array.isArray(data.events)) {
+    throw new Error(
+      "Economic calendar returned an unexpected format"
+    );
   }
 
   return data.events;
 }
 
-export async function POST() {
+
+function unavailableFundamentals(note) {
+  return {
+    source: "Finance Calendar",
+    mode: "automatic",
+    bias: "unknown",
+    eventRisk: "unknown",
+    calendarAvailable: false,
+    calendarCoverage: "unverified",
+    upcomingHighImpactEvents: [],
+    interpretations: [],
+    complete: false,
+    note,
+    caution:
+      "Fundamental information is incomplete. Event risk is unknown, so this must not be treated as a safe trading environment.",
+  };
+}
+
+export async function POST(request) {
   try {
-    const [oneHourCandles, fourHourCandles, calendarResult] =
-      await Promise.all([
-        getCandles("1h", 250),
-        getCandles("4h", 250),
-        getEconomicEvents()
-          .then((events) => ({
-            available: true,
-            events,
-            error: null,
-          }))
-          .catch((error) => ({
-            available: false,
-            events: [],
-            error: error.message || "Economic calendar unavailable",
-          })),
-      ]);
+    const body = await request.json().catch(() => ({}));
 
-    const oneHour = analyzeStructure(oneHourCandles);
-    const fourHour = analyzeStructure(fourHourCandles);
+    const symbol = String(
+      body.symbol || "EUR/USD"
+    ).toUpperCase();
 
+    if (!Object.prototype.hasOwnProperty.call(INSTRUMENTS, symbol)) {
+      return NextResponse.json(
+        {
+          error: `Unsupported trading instrument: ${symbol}`,
+          supportedInstruments: Object.keys(INSTRUMENTS),
+        },
+        { status: 400 }
+      );
+    }
+
+    const instrument = INSTRUMENTS[symbol];
+
+    const [
+      oneHourCandles,
+      fourHourCandles,
+      calendarResult,
+    ] = await Promise.all([
+      getCandles("1h", 250, symbol),
+      getCandles("4h", 250, symbol),
+      getEconomicEvents()
+        .then((events) => ({
+          available: true,
+          events,
+          error: null,
+        }))
+        .catch((error) => ({
+          available: false,
+          events: [],
+          error:
+            error.message ||
+            "Economic calendar unavailable",
+        })),
+    ]);
+
+    const oneHour = analyzeStructure(oneHourCandles, instrument);
+const fourHour = analyzeStructure(fourHourCandles, instrument);
+
+    // Keep the existing automatic assessment for EUR/USD.
+    // Other instruments remain incomplete until their
+    // currency-specific calendar assessment is verified.
     const fundamentals = calendarResult.available
-      ? assessAutomaticFundamentals(calendarResult.events)
-      : {
-          source: "Finance Calendar",
-          mode: "automatic",
-          bias: "unknown",
-          eventRisk: "unknown",
-          calendarAvailable: false,
-          calendarCoverage: "unverified",
-          upcomingHighImpactEvents: [],
-          interpretations: [],
-          complete: false,
-          note: calendarResult.error,
-          caution:
-            "The economic calendar could not be retrieved. Event risk is unknown.",
-        };
+  ? assessAutomaticFundamentals(
+      calendarResult.events,
+      symbol
+    )
+  : unavailableFundamentals(calendarResult.error);
 
     const combined = combineAnalysis(
       oneHour,
@@ -103,13 +155,13 @@ export async function POST() {
 
     const responseData = {
       generatedAt: new Date().toISOString(),
-      symbol: "EUR/USD",
-      source: calendarResult.available
-        ? "Twelve Data + Finance Calendar"
-        : "Twelve Data; Finance Calendar unavailable",
+      symbol,
+      instrument,
+      source: fundamentals.calendarAvailable
+  ? "Twelve Data + Finance Calendar (coverage unverified)"
+  : "Twelve Data; fundamentals incomplete",
       liveData: true,
 
-      // Technical analysis results.
       oneHour,
       fourHour,
       fundamentals,
@@ -117,76 +169,82 @@ export async function POST() {
       analysisMode: combined.analysisMode,
       trade,
 
-      // Diagnostic information for checking dashboard consistency.
-      
-dataDiagnostics: {
-  oneHour: {
-    candleCount: oneHourCandles.length,
-    latestCandleTime: latestOneHourCandle.time,
-    latestCandleClose: latestOneHourCandle.close,
-    analysisEntry: oneHour.entry,
-    candleMatchesAnalysisEntry:
-      latestOneHourCandle.close === oneHour.entry,
+      dataDiagnostics: {
+        symbol,
 
-    signal: oneHour.signal,
-    trend: oneHour.trend,
-    structureTrend: oneHour.structureTrend,
-    breakoutDirection: oneHour.breakoutDirection,
-    recentHigh: oneHour.recentHigh,
-    recentLow: oneHour.recentLow,
-    atr: oneHour.atr,
-    ema20: oneHour.ema20,
-    ema50: oneHour.ema50,
-    brokeHigh: oneHour.brokeHigh,
-    brokeLow: oneHour.brokeLow,
-    priceConfirmsBreakout: oneHour.priceConfirmsBreakout,
-    bodyConfirmsBreakout: oneHour.bodyConfirmsBreakout,
-    structuralConfirmation: oneHour.structuralConfirmation,
-    trendSupportsBreakout: oneHour.trendSupportsBreakout,
-    breakoutConfirmed: oneHour.breakoutConfirmed,
-    setupConfirmed: oneHour.setupConfirmed,
-    reason: oneHour.reason,
-    
-  potentialBuyLevel: oneHour.potentialBuyLevel,
-  potentialSellLevel: oneHour.potentialSellLevel,
-  distanceToBuy: oneHour.distanceToBuy,
-  distanceToSell: oneHour.distanceToSell,
-  pipsToBuy: oneHour.pipsToBuy,
-  pipsToSell: oneHour.pipsToSell,
-  breakoutStatus: oneHour.breakoutStatus,
+        oneHour: {
+          candleCount: oneHourCandles.length,
+          latestCandleTime: latestOneHourCandle.time,
+          latestCandleClose: latestOneHourCandle.close,
+          analysisEntry: oneHour.entry,
+          candleMatchesAnalysisEntry:
+  Number(
+    latestOneHourCandle.close.toFixed(instrument.pricePrecision)
+  ) === oneHour.entry,
 
-  },
+          signal: oneHour.signal,
+          trend: oneHour.trend,
+          structureTrend: oneHour.structureTrend,
+          breakoutDirection: oneHour.breakoutDirection,
+          recentHigh: oneHour.recentHigh,
+          recentLow: oneHour.recentLow,
+          atr: oneHour.atr,
+          ema20: oneHour.ema20,
+          ema50: oneHour.ema50,
+          brokeHigh: oneHour.brokeHigh,
+          brokeLow: oneHour.brokeLow,
+          priceConfirmsBreakout:
+            oneHour.priceConfirmsBreakout,
+          bodyConfirmsBreakout:
+            oneHour.bodyConfirmsBreakout,
+          structuralConfirmation:
+            oneHour.structuralConfirmation,
+          trendSupportsBreakout:
+            oneHour.trendSupportsBreakout,
+          breakoutConfirmed: oneHour.breakoutConfirmed,
+          setupConfirmed: oneHour.setupConfirmed,
+          reason: oneHour.reason,
 
-  fourHour: {
-    candleCount: fourHourCandles.length,
-    latestCandleTime: latestFourHourCandle.time,
-    latestCandleClose: latestFourHourCandle.close,
-    trend: fourHour.trend,
-    structureTrend: fourHour.structureTrend,
-    signal: fourHour.signal,
-  },
+          potentialBuyLevel: oneHour.potentialBuyLevel,
+          potentialSellLevel: oneHour.potentialSellLevel,
+          distanceToBuy: oneHour.distanceToBuy,
+          distanceToSell: oneHour.distanceToSell,
+          pipsToBuy: oneHour.pipsToBuy,
+          pipsToSell: oneHour.pipsToSell,
+          breakoutStatus: oneHour.breakoutStatus,
+        },
 
-  combined: {
-    signal: combined.signal,
-    reason: combined.reason,
-    checks: combined.checks,
-    failedChecks: combined.failedChecks,
-  },
+        fourHour: {
+          candleCount: fourHourCandles.length,
+          latestCandleTime: latestFourHourCandle.time,
+          latestCandleClose: latestFourHourCandle.close,
+          trend: fourHour.trend,
+          structureTrend: fourHour.structureTrend,
+          signal: fourHour.signal,
+        },
 
-  trade,
+        combined: {
+          signal: combined.signal,
+          reason: combined.reason,
+          checks: combined.checks,
+          failedChecks: combined.failedChecks,
+        },
 
-  calendarAvailable: fundamentals.calendarAvailable ?? true,
-  fundamentalsComplete: combined.fundamentalsComplete,
-  eventRisk: fundamentals.eventRisk,
-},
+        trade,
 
+        calendarAvailable:
+          fundamentals.calendarAvailable ?? false,
+        fundamentalsComplete:
+          combined.fundamentalsComplete,
+        eventRisk: fundamentals.eventRisk,
+      },
 
       caveat:
         "Rule-based educational analysis. The 1H completed candle is the setup reference; the displayed entry is not a guarantee of an executable market price. Fundamental completeness and calendar risk must be evaluated according to the configured trading rules.",
     };
 
     console.log(
-      "NSB analysis diagnostics:",
+      `NSB ${symbol} analysis diagnostics:`,
       JSON.stringify(responseData.dataDiagnostics, null, 2)
     );
 
