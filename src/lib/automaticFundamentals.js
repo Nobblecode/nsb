@@ -2,6 +2,8 @@
 const normalize = (value) =>
   String(value ?? "").trim().toLowerCase();
 
+const CALENDAR_SOURCE = "ShowMyTrades";
+
 const INSTRUMENT_CURRENCIES = {
   "EUR/USD": { base: "EUR", quote: "USD" },
   "XAU/USD": { base: "XAU", quote: "USD" },
@@ -23,27 +25,45 @@ function getCurrency(event) {
     `${event.country ?? ""} ${event.currency ?? ""}`
   );
 
-  if (
-    /\b(usd|usa|us|united states|united states of america)\b/.test(value)
-  ) return "USD";
+  if (/\b(usd|usa|us|united states|united states of america)\b/.test(value)) {
+    return "USD";
+  }
 
-  if (
-    /\b(eur|euro|eurozone|euro area|european union|eu)\b/.test(value)
-  ) return "EUR";
+  if (/\b(eur|euro|eurozone|euro area|european union|eu)\b/.test(value)) {
+    return "EUR";
+  }
 
-  if (
-    /\b(jpy|japan|japanese yen)\b/.test(value)
-  ) return "JPY";
+  if (/\b(jpy|japan|japanese yen)\b/.test(value)) {
+    return "JPY";
+  }
 
-  if (
-    /\b(aud|australia|australian dollar)\b/.test(value)
-  ) return "AUD";
+  if (/\b(aud|australia|australian dollar)\b/.test(value)) {
+    return "AUD";
+  }
 
   return null;
 }
 
 function getEventDate(event) {
+  if (event.ts != null && event.ts !== "") {
+    const timestamp = Number(event.ts);
+
+    if (Number.isFinite(timestamp)) {
+      // Support Unix seconds and Unix milliseconds.
+      const date = new Date(
+        timestamp < 100000000000
+          ? timestamp * 1000
+          : timestamp
+      );
+
+      if (!Number.isNaN(date.getTime())) {
+        return date;
+      }
+    }
+  }
+
   const value =
+    event.time ??
     event.release_at_utc ??
     event.time_utc ??
     event.datetime ??
@@ -53,6 +73,8 @@ function getEventDate(event) {
 
   let dateValue = value;
 
+  // Preserve compatibility with the previous provider's
+  // timezone-naive date strings.
   if (
     typeof dateValue === "string" &&
     /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(
@@ -72,9 +94,23 @@ function getImpact(event) {
     event.impact ?? event.importance ?? event.volatility
   );
 
-  if (/high|3|red/.test(value)) return "high";
-  if (/medium|moderate|2|orange|yellow/.test(value)) return "medium";
-  if (/low|1|green/.test(value)) return "low";
+  if (
+    ["high", "3", "red", "high impact"].includes(value)
+  ) {
+    return "high";
+  }
+
+  if (
+    ["medium", "moderate", "2", "orange", "yellow"].includes(value)
+  ) {
+    return "medium";
+  }
+
+  if (
+    ["low", "1", "green"].includes(value)
+  ) {
+    return "low";
+  }
 
   return "unknown";
 }
@@ -112,8 +148,8 @@ function getActual(event) {
 
 function getForecast(event) {
   return getNumericValue(
-    event.consensus ??
     event.forecast ??
+    event.consensus ??
     event.forecast_value
   );
 }
@@ -123,15 +159,63 @@ function getSurprise(event) {
   const forecast = getForecast(event);
 
   if (actual === null || forecast === null) return null;
+
   if (actual === forecast) return 0;
 
   return actual > forecast ? 1 : -1;
+}
+
+function getEventStatus(event) {
+  const status = normalize(event.status);
+
+  if (/cancel/.test(status)) return "cancelled";
+  if (/mov/.test(status)) return "moved";
+  if (/tentative|provisional/.test(status)) return "tentative";
+
+  if (/release|actual|complete|published/.test(status)) {
+    return "released";
+  }
+
+  // Some providers leave the status as "scheduled"
+  // even after publishing actual economic figures.
+  if (
+    /schedul/.test(status) &&
+    getActual(event) !== null
+  ) {
+    return "released";
+  }
+
+  if (/schedul/.test(status)) return "scheduled";
+
+  return "unknown";
+}
+
+function getEventConfidence(event) {
+  const confidence = normalize(event.confidence);
+
+  if (
+    [
+      "official",
+      "sources_agree",
+      "single_source",
+      "sources_disagree",
+    ].includes(confidence)
+  ) {
+    return confidence;
+  }
+
+  return "unknown";
 }
 
 function interpretEvent(event) {
   const title = normalize(getTitle(event));
   const currency = getCurrency(event);
   const surprise = getSurprise(event);
+
+  const confidence = getEventConfidence(event);
+
+  // Conflicting sources must not create directional bias.
+  if (confidence === "sources_disagree") return null;
 
   if (!currency || surprise === null) return null;
 
@@ -165,6 +249,7 @@ function interpretEvent(event) {
     title: getTitle(event),
     actual: getActual(event),
     forecast: getForecast(event),
+    confidence,
     surprise:
       surprise === 0
         ? "in line with forecast"
@@ -172,6 +257,14 @@ function interpretEvent(event) {
           ? "above forecast"
           : "below forecast",
   };
+}
+
+function getWindowMinutes(value, fallback) {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed)
+    ? Math.max(0, parsed)
+    : fallback;
 }
 
 export function assessAutomaticFundamentals(
@@ -182,7 +275,7 @@ export function assessAutomaticFundamentals(
   const instrument = INSTRUMENT_CURRENCIES[symbol];
 
   const emptyResult = {
-    source: "Finance Calendar",
+    source: CALENDAR_SOURCE,
     mode: "automatic",
     symbol,
     bias: "unknown",
@@ -190,10 +283,21 @@ export function assessAutomaticFundamentals(
     calendarAvailable: false,
     calendarCoverage: "unverified",
     upcomingHighImpactEvents: [],
+    recentReleasedHighImpactEvents: [],
+    uncertainEvents: [],
     interpretations: [],
+    currencyScores: {},
+    eventCounts: {
+      retrieved: 0,
+      relevant: 0,
+      dated: 0,
+      upcoming: 0,
+      recentReleased: 0,
+      uncertain: 0,
+    },
     complete: false,
     note:
-      "No usable calendar events were returned. Fundamental bias and event risk cannot be verified.",
+      "Calendar data is unavailable or insufficient. Fundamental bias and event risk cannot be verified.",
     caution:
       "Missing or incomplete calendar data must not be treated as neutral or safe.",
   };
@@ -205,17 +309,19 @@ export function assessAutomaticFundamentals(
     };
   }
 
-  if (!Array.isArray(events) || events.length === 0) {
+  if (!Array.isArray(events)) {
     return emptyResult;
   }
 
-  const nowMs = now.getTime();
+  const currentDate = new Date(now);
+  const nowMs = currentDate.getTime();
 
   if (!Number.isFinite(nowMs)) {
     return {
       ...emptyResult,
       calendarAvailable: true,
-      note: "The analysis time is invalid, so event timing cannot be verified.",
+      note:
+        "The analysis time is invalid, so event timing cannot be verified.",
     };
   }
 
@@ -227,70 +333,166 @@ export function assessAutomaticFundamentals(
       ? ["USD"]
       : [instrument.base, instrument.quote];
 
+  const blockBeforeMinutes = getWindowMinutes(
+    process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES,
+    60
+  );
+
+  const blockAfterMinutes = getWindowMinutes(
+    process.env.NSB_EVENT_BLOCK_AFTER_MINUTES,
+    30
+  );
+
   const datedEvents = [];
   const interpretations = [];
+  const uncertainEvents = [];
 
   for (const event of events) {
-    const date = getEventDate(event);
-
-    if (!date) continue;
-
-    const minutesAway =
-      (date.getTime() - nowMs) / 60000;
-
-    const impact = getImpact(event);
     const currency = getCurrency(event);
 
     if (!currency || !relevantCurrencies.includes(currency)) {
       continue;
     }
 
-    datedEvents.push({
+    const date = getEventDate(event);
+    const impact = getImpact(event);
+    const status = getEventStatus(event);
+    const confidence = getEventConfidence(event);
+
+    if (!date) {
+      uncertainEvents.push({
+        title: getTitle(event),
+        currency,
+        impact,
+        reason: "Event date or timestamp is unavailable.",
+      });
+
+      continue;
+    }
+
+    const minutesAway =
+      (date.getTime() - nowMs) / 60000;
+
+    const item = {
       event,
       date,
       minutesAway,
       impact,
       currency,
-    });
+      status,
+      confidence,
+    };
+
+    datedEvents.push(item);
 
     if (
+      status === "tentative" ||
+      status === "moved" ||
+      status === "unknown" ||
+      confidence === "sources_disagree" ||
+      impact === "unknown"
+    ) {
+      uncertainEvents.push({
+        title: getTitle(event),
+        currency,
+        impact,
+        status,
+        confidence,
+        releaseAt: date.toISOString(),
+        reason:
+          "Event metadata requires additional verification.",
+      });
+    }
+
+    // Only recent past events with actual values are considered
+    // for directional fundamental interpretation.
+    if (
       minutesAway < 0 &&
-      minutesAway >= -minutesInDay
+      minutesAway >= -minutesInDay &&
+      getActual(event) !== null
     ) {
       const result = interpretEvent(event);
 
-      if (result) interpretations.push(result);
+      if (result) {
+        interpretations.push(result);
+      }
     }
   }
 
-  const blockBeforeMinutes = Math.max(
-    0,
-    Number(
-      process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES ?? 60
-    ) || 0
+  const relevantUpcomingEvents = datedEvents.filter(
+    (item) =>
+      item.minutesAway >= 0 &&
+      item.minutesAway <= coverageWindowMinutes
   );
 
-  const blockAfterMinutes = Math.max(
-    0,
-    Number(
-      process.env.NSB_EVENT_BLOCK_AFTER_MINUTES ?? 30
-    ) || 0
-  );
+  const isUncertainEvent = (item) =>
+  item.status === "tentative" ||
+  item.status === "moved" ||
+  item.status === "unknown" ||
+  item.confidence === "sources_disagree" ||
+  item.confidence === "unknown" ||
+  item.impact === "unknown";
 
-  const upcomingHighImpactEvents = datedEvents
-    .filter(
-      (item) =>
-        item.minutesAway >= -blockAfterMinutes &&
-        item.minutesAway <= blockBeforeMinutes &&
-        item.impact === "high"
-    )
-    .map((item) => ({
-      title: getTitle(item.event),
-      currency: item.currency,
-      impact: item.impact,
-      minutesAway: Math.round(item.minutesAway),
-      releaseAt: item.date.toISOString(),
-    }));
+const isInsideProtectionWindow = (item) =>
+  item.minutesAway >= -blockAfterMinutes &&
+  item.minutesAway <= blockBeforeMinutes;
+
+const protectedHighImpactEvents = datedEvents.filter(
+  (item) =>
+    item.impact === "high" &&
+    item.status !== "cancelled" &&
+    isInsideProtectionWindow(item)
+);
+
+const upcomingHighImpactEvents = protectedHighImpactEvents
+  .filter(
+    (item) =>
+      item.minutesAway >= 0 &&
+      !isUncertainEvent(item)
+  )
+  .map((item) => ({
+    title: getTitle(item.event),
+    currency: item.currency,
+    impact: item.impact,
+    minutesAway: Math.round(item.minutesAway),
+    releaseAt: item.date.toISOString(),
+    status: item.status,
+    confidence: item.confidence,
+  }));
+
+const recentReleasedHighImpactEvents = protectedHighImpactEvents
+  .filter(
+    (item) =>
+      item.minutesAway < 0 &&
+      !isUncertainEvent(item)
+  )
+  .map((item) => ({
+    title: getTitle(item.event),
+    currency: item.currency,
+    impact: item.impact,
+    minutesAgo: Math.round(Math.abs(item.minutesAway)),
+    releaseAt: item.date.toISOString(),
+    status: item.status,
+    confidence: item.confidence,
+  }));
+
+const uncertainProtectedEvents = protectedHighImpactEvents
+  .filter(isUncertainEvent)
+  .map((item) => ({
+    title: getTitle(item.event),
+    currency: item.currency,
+    impact: item.impact,
+    status: item.status,
+    confidence: item.confidence,
+    releaseAt: item.date.toISOString(),
+    minutesAway: Math.round(item.minutesAway),
+    reason: "High-impact event falls within the protection window, but its metadata is uncertain.",
+  }));
+
+const allUncertainEvents = [
+  ...uncertainEvents,
+  ...uncertainProtectedEvents,
+];
 
   const currencyScores = {};
 
@@ -314,8 +516,6 @@ export function assessAutomaticFundamentals(
 
   let bias = "unknown";
 
-  // Both sides must have usable data before assigning
-  // a directional currency-pair bias.
   if (hasBaseData && hasQuoteData) {
     const difference =
       currencyScores[instrument.base] -
@@ -329,43 +529,46 @@ export function assessAutomaticFundamentals(
           : "neutral";
   }
 
-  const hasNearTermEvents = datedEvents.some(
-    (item) =>
-      item.minutesAway >= 0 &&
-      item.minutesAway <= coverageWindowMinutes
-  );
-
-  const calendarCoverage = hasNearTermEvents
-    ? "near-term-events-found-unverified"
-    : "insufficient";
-
+  // An event inside either protection window creates high risk.
+  // Otherwise risk remains unknown, never automatically low.
   const eventRisk =
-    upcomingHighImpactEvents.length > 0
-      ? "high"
-      : "unknown";
+  protectedHighImpactEvents.length > 0
+    ? "high"
+    : "unknown";
 
-  // Retrieved events do not prove complete provider coverage.
-  // XAU also requires a separate gold-specific assessment.
+  // ShowMyTrades does not guarantee complete calendar coverage.
+  // Never promote this feed to verified based only on a successful fetch.
+  const calendarCoverage = "unverified";
   const complete = false;
 
   let note;
 
   if (instrument.base === "XAU") {
     note =
-      "USD economic releases can be assessed, but this calendar does not provide a verified gold-specific fundamental assessment.";
-  } else if (!hasNearTermEvents) {
+      "USD economic releases are assessed for XAU/USD. This calendar does not establish complete gold-specific fundamental coverage.";
+  } else if (eventRisk === "high") {
+    note =
+      `${upcomingHighImpactEvents.length} upcoming and ${recentReleasedHighImpactEvents.length} recently released high-impact event(s) fall within the configured protection windows.`;
+  } else if (relevantUpcomingEvents.length === 0) {
     note =
       "No relevant dated events were found within the next seven days. Calendar coverage and event risk remain unverified.";
   } else if (bias === "unknown") {
     note =
-      "Relevant calendar events were retrieved, but usable actual-versus-consensus data for both currencies was not available. Fundamental bias remains unknown.";
+      "Relevant events were retrieved, but usable actual-versus-forecast data for both currencies was not available. Fundamental bias remains unknown.";
   } else {
     note =
       `Interpreted ${interpretations.length} recent economic release(s) for ${symbol}. The directional estimate is simplified and calendar completeness remains unverified.`;
   }
 
+  const caution =
+    eventRisk === "high"
+      ? "A relevant high-impact event is inside the configured protection window. NSB must block new setups."
+      : uncertainEvents.length > 0
+        ? `${uncertainEvents.length} relevant event(s) have uncertain metadata. Calendar coverage remains unverified, so NSB must block new setups.`
+        : "No high-impact event was detected inside the configured protection window. This does not establish that the calendar is complete or that event risk is low.";
+
   return {
-    source: "Finance Calendar",
+    source: CALENDAR_SOURCE,
     mode: "automatic",
     symbol,
     bias,
@@ -373,13 +576,26 @@ export function assessAutomaticFundamentals(
     calendarAvailable: true,
     calendarCoverage,
     upcomingHighImpactEvents,
+    recentReleasedHighImpactEvents,
+    uncertainEvents: allUncertainEvents,
     interpretations,
+    currencyScores,
+    eventCounts: {
+      retrieved: events.length,
+      relevant: datedEvents.length + uncertainEvents.filter(
+        (item) => !item.releaseAt
+      ).length,
+      dated: datedEvents.length,
+      upcoming: relevantUpcomingEvents.length,
+      recentReleased: recentReleasedHighImpactEvents.length,
+        uncertain: allUncertainEvents.length,
+    },
     complete,
     note,
-    currencyScores,
-    caution:
-      eventRisk === "high"
-        ? `A relevant high-impact event is inside the configured event window (${blockBeforeMinutes} minutes before / ${blockAfterMinutes} minutes after). NSB should block new setups.`
-        : "Calendar coverage is unverified. The absence of a detected high-impact event does not establish that the market is low-risk.",
+    caution,
+    protectionWindow: {
+      beforeMinutes: blockBeforeMinutes,
+      afterMinutes: blockAfterMinutes,
+    },
   };
 }

@@ -1,4 +1,3 @@
-
 const mean = (values) =>
   values.reduce((sum, value) => sum + value, 0) / (values.length || 1);
 
@@ -85,7 +84,7 @@ export function analyzeStructure(
     );
   }
 
-    if (
+  if (
     !Number.isFinite(pipSize) ||
     pipSize <= 0 ||
     !Number.isInteger(pricePrecision) ||
@@ -148,8 +147,6 @@ export function analyzeStructure(
         ? "bearish"
         : "mixed";
 
-
-  
   const swingHighPattern = higherHighs
     ? "higher high"
     : lowerHighs
@@ -165,7 +162,7 @@ export function analyzeStructure(
   const support = lastSwingLow?.price ?? null;
   const resistance = lastSwingHigh?.price ?? null;
 
-    const distanceToSupport =
+  const distanceToSupport =
     support == null ? null : Math.abs(last.close - support);
 
   const distanceToResistance =
@@ -183,7 +180,7 @@ export function analyzeStructure(
 
   const approachingThreshold = atrValue * 0.25;
 
-    const approachingSupport = Boolean(
+  const approachingSupport = Boolean(
     support != null &&
       last.close >= support &&
       last.close - support <= approachingThreshold
@@ -211,7 +208,6 @@ export function analyzeStructure(
         ? `Bearish swing structure: ${swingHighPattern} and ${swingLowPattern}.`
         : `Mixed swing structure: ${swingHighPattern} and ${swingLowPattern}.`;
 
-
   const comparisonCandles = candles.slice(-20, -1);
 
   const recentHigh = Math.max(
@@ -222,12 +218,10 @@ export function analyzeStructure(
     ...comparisonCandles.map((candle) => candle.low)
   );
 
-  
   const brokeHigh = last.close > recentHigh;
   const brokeLow = last.close < recentLow;
 
   // Breakout monitoring levels (diagnostics only).
-  // These do NOT change the existing signal rules.
   const potentialBuyLevel = recentHigh;
   const potentialSellLevel = recentLow;
 
@@ -241,9 +235,8 @@ export function analyzeStructure(
     last.close - potentialSellLevel
   );
 
-    const pipsToBuy = distanceToBuy / pipSize;
+  const pipsToBuy = distanceToBuy / pipSize;
   const pipsToSell = distanceToSell / pipSize;
-
 
   const approachingBuyBreakout = Boolean(
     !brokeHigh &&
@@ -267,13 +260,11 @@ export function analyzeStructure(
           ? "APPROACHING SELL BREAKOUT LEVEL"
           : "NOT YET NEAR BREAKOUT LEVEL";
 
-
   const breakoutStatus = brokeHigh
     ? "PRICE ABOVE RANGE — confirmation required"
     : brokeLow
       ? "PRICE BELOW RANGE — confirmation required"
       : "PRICE INSIDE RANGE";
-
 
   const breakoutDirection = brokeHigh
     ? "bullish"
@@ -404,99 +395,91 @@ export function analyzeStructure(
     },
   ];
 
-  
+  return {
+    signal,
+    trend,
+    structureTrend,
+    breakoutDirection,
+    structure,
+    reason,
+    checks,
 
-return {
-  signal,
-  trend,
-  structureTrend,
-  breakoutDirection,
-  structure,
-  reason,
-  checks,
+    // Breakout diagnostics
+    recentHigh: round(recentHigh, pricePrecision),
+    recentLow: round(recentLow, pricePrecision),
+    brokeHigh,
+    brokeLow,
+    priceConfirmsBreakout,
+    bodyConfirmsBreakout,
+    structuralConfirmation,
+    trendSupportsBreakout,
+    breakoutConfirmed,
+    setupConfirmed,
 
-  // Breakout diagnostics
-  recentHigh: round(recentHigh, pricePrecision),
-  recentLow: round(recentLow, pricePrecision),
-  brokeHigh,
-  brokeLow,
-  priceConfirmsBreakout,
-  bodyConfirmsBreakout,
-  structuralConfirmation,
-  trendSupportsBreakout,
-  breakoutConfirmed,
-  setupConfirmed,
+    potentialBuyLevel: round(potentialBuyLevel, pricePrecision),
+    potentialSellLevel: round(potentialSellLevel, pricePrecision),
+    distanceToBuy: round(distanceToBuy, pricePrecision),
+    distanceToSell: round(distanceToSell, pricePrecision),
+    pipsToBuy: Number(pipsToBuy.toFixed(1)),
+    pipsToSell: Number(pipsToSell.toFixed(1)),
+    breakoutStatus,
 
-  potentialBuyLevel: round(potentialBuyLevel, pricePrecision),
-  potentialSellLevel: round(potentialSellLevel, pricePrecision),
-  distanceToBuy: round(distanceToBuy, pricePrecision),
-  distanceToSell: round(distanceToSell, pricePrecision),
-  pipsToBuy: Number(pipsToBuy.toFixed(1)),
-  pipsToSell: Number(pipsToSell.toFixed(1)),
-  breakoutStatus,
+    // Trade levels
+    entry: round(entry, pricePrecision),
+    stopLoss:
+      stopLoss == null
+        ? null
+        : round(stopLoss, pricePrecision),
+    takeProfits: takeProfits.map((value) =>
+      value == null ? null : round(value, pricePrecision)
+    ),
 
-  // Trade levels
-  entry: round(entry, pricePrecision),
-  stopLoss:
-    stopLoss == null
-      ? null
-      : round(stopLoss, pricePrecision),
-  takeProfits: takeProfits.map((value) =>
-    value == null ? null : round(value, pricePrecision)
-  ),
+    // Indicator values
+    atr: round(atrValue, pricePrecision),
+    ema20: round(ema20, pricePrecision),
+    ema50: round(ema50, pricePrecision),
+    lastCandleTime: last.time,
+    latestCandle: last,
 
-  // Indicator values
-  atr: round(atrValue, pricePrecision),
-  ema20: round(ema20, pricePrecision),
-  ema50: round(ema50, pricePrecision),
-  lastCandleTime: last.time,
-  latestCandle: last,
+    // Extended market-structure report
+    swingHighPattern,
+    swingLowPattern,
+    marketStructureSummary,
+    support:
+      support == null ? null : round(support, pricePrecision),
+    resistance:
+      resistance == null ? null : round(resistance, pricePrecision),
+    distanceToSupport:
+      distanceToSupport == null
+        ? null
+        : round(distanceToSupport, pricePrecision),
+    distanceToResistance:
+      distanceToResistance == null
+        ? null
+        : round(distanceToResistance, pricePrecision),
+    supportDistancePips,
+    resistanceDistancePips,
+    approachingSupport,
+    approachingResistance,
+    marketPosition,
+    approachingBuyBreakout,
+    approachingSellBreakout,
+    breakoutProximity,
 
-
-  // Extended market-structure report
-  swingHighPattern,
-  swingLowPattern,
-  marketStructureSummary,
-  support:
-    support == null ? null : round(support, pricePrecision),
-  resistance:
-    resistance == null ? null : round(resistance, pricePrecision),
-  distanceToSupport:
-    distanceToSupport == null
-      ? null
-      : round(distanceToSupport, pricePrecision),
-  distanceToResistance:
-    distanceToResistance == null
-      ? null
-      : round(distanceToResistance, pricePrecision),
-  supportDistancePips,
-  resistanceDistancePips,
-  approachingSupport,
-  approachingResistance,
-  marketPosition,
-  approachingBuyBreakout,
-  approachingSellBreakout,
-  breakoutProximity,
-
-
-  // Confidence and market structure
-  confidenceScore,
-  confidenceNote:
-    "Heuristic confluence score, not a probability or proven win rate.",
-  swingHigh: lastSwingHigh
-    ? round(lastSwingHigh.price, pricePrecision)
-    : null,
-  swingLow: lastSwingLow
-    ? round(lastSwingLow.price, pricePrecision)
-    : null,
-  dataPoints: candles.length,
-  previousClose: previous.close,
-};
-
-
+    // Confidence and market structure
+    confidenceScore,
+    confidenceNote:
+      "Heuristic confluence score, not a probability or proven win rate.",
+    swingHigh: lastSwingHigh
+      ? round(lastSwingHigh.price, pricePrecision)
+      : null,
+    swingLow: lastSwingLow
+      ? round(lastSwingLow.price, pricePrecision)
+      : null,
+    dataPoints: candles.length,
+    previousClose: previous.close,
+  };
 }
-
-
 
 export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
   const validBias = ["bullish", "bearish", "neutral"].includes(
@@ -512,9 +495,21 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     ? "TECHNICAL + FUNDAMENTAL"
     : "TECHNICAL ONLY";
 
-  const eventRisk = fundamentals.eventRisk || "unknown";
+  const eventRisk = String(
+    fundamentals.eventRisk || "unknown"
+  ).toLowerCase();
+
+  const calendarCoverage = String(
+    fundamentals.calendarCoverage || "unknown"
+  ).toLowerCase();
+
   const highRisk = eventRisk === "high";
-  const calendarUnverified = eventRisk === "unknown";
+
+  // Calendar safety requires explicitly verified coverage.
+  const calendarVerified = calendarCoverage === "verified";
+
+  const calendarUnverified =
+    !calendarVerified || eventRisk === "unknown";
 
   const technicalSignal = oneHour.signal;
 
@@ -528,7 +523,7 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
         ? "bearish"
         : "unknown";
 
-  // EMA trend comparison
+  // Higher-timeframe EMA trend comparison
   const fourHourOpposes =
     (signalDirection === "bullish" && fourHour.trend === "bearish") ||
     (signalDirection === "bearish" && fourHour.trend === "bullish");
@@ -568,11 +563,12 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     bias !== "neutral" &&
     bias !== signalDirection;
 
-  // Unknown calendar risk allows technical-only analysis.
-  // Verified high-impact event risk always blocks new setups.
+  // Unknown or unverified calendar coverage blocks new trades.
+  // Only verified low/medium event risk can pass this check.
   const eventRiskAcceptable =
-    !highRisk &&
-    (!calendarUnverified || analysisMode === "TECHNICAL ONLY");
+    calendarVerified &&
+    ["low", "medium"].includes(eventRisk) &&
+    !highRisk;
 
   const technicalSetupValid = Boolean(
     hasTechnicalSignal &&
@@ -586,16 +582,24 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
 
   const checks = [
     {
-      id: "trend-alignment",
-      label: "4H EMA trend context",
-      passed: !fourHourOpposes,
-      detail: fourHourOpposes
-        ? `The 4H ${fourHour.trend} EMA trend opposes the 1H ${signalDirection} setup.`
-        : `The 4H EMA trend (${fourHour.trend}) does not oppose the 1H setup.`,
+      id: "swing-structure-confirmation",
+      label: "1H and 4H swing structure confirmation",
+      passed:
+        oneHourStructureConfirms &&
+        fourHourStructureConfirms,
+      detail:
+        oneHourStructureConfirms && fourHourStructureConfirms
+          ? `Both the 1H and 4H swing structures confirm the ${signalDirection} direction.`
+          : !oneHourStructureConfirms &&
+              !fourHourStructureConfirms
+            ? `Neither timeframe confirms the ${signalDirection} direction. 1H: ${oneHourStructure}; 4H: ${fourHourStructure}.`
+            : !oneHourStructureConfirms
+              ? `The 1H structure (${oneHourStructure}) does not confirm the ${signalDirection} direction.`
+              : `The 4H structure (${fourHourStructure}) does not confirm the ${signalDirection} direction.`,
     },
     {
-      id: "structure-alignment",
-      label: "1H and 4H market structure",
+      id: "higher-timeframe-structure",
+      label: "4H swing structure does not oppose setup",
       passed: !fourHourStructureOpposes,
       detail: fourHourStructureOpposes
         ? `The 4H ${fourHourStructure} swing structure opposes the 1H ${signalDirection} setup.`
@@ -603,7 +607,15 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
           ? `The 1H and 4H swing structures agree (${oneHourStructure}).`
           : structureAlignment === "conflicting"
             ? `The 1H structure is ${oneHourStructure}, while the 4H structure is ${fourHourStructure}. The timeframes disagree.`
-            : `Structure confirmation is inconclusive. 1H: ${oneHourStructure}; 4H: ${fourHourStructure}.`,
+            : `The 4H swing structure does not directly oppose the setup, but confirmation remains inconclusive. 1H: ${oneHourStructure}; 4H: ${fourHourStructure}.`,
+    },
+    {
+      id: "higher-timeframe-ema",
+      label: "4H EMA trend does not oppose setup",
+      passed: !fourHourOpposes,
+      detail: fourHourOpposes
+        ? `The 4H EMA trend (${fourHour.trend}) opposes the 1H ${signalDirection} setup. NSB blocks the trade.`
+        : `The 4H EMA trend (${fourHour.trend}) does not directly oppose the 1H ${signalDirection} setup.`,
     },
     {
       id: "directional-trend",
@@ -631,17 +643,19 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
       passed: true,
       detail: fundamentalsComplete
         ? "Fundamental bias data is available."
-        : "Fundamental data is incomplete. NSB is operating in technical-only mode.",
+        : "Fundamental data is incomplete. NSB is operating in technical-only mode. This does not override calendar safety checks.",
     },
     {
       id: "event-risk",
       label: "High-impact event risk",
       passed: eventRiskAcceptable,
       detail: highRisk
-        ? "A verified high-impact event is identified. NSB blocks new setups."
+        ? "A high-impact event is identified. NSB blocks new setups."
         : calendarUnverified
-          ? "Economic calendar is unverified. NSB is continuing with technical-only analysis. This does not mean the event window is safe."
-          : `Reported event risk is ${eventRisk}.`,
+          ? `Calendar coverage is ${calendarCoverage} and event risk is ${eventRisk}. NSB blocks new trades until calendar coverage and event risk are verified.`
+          : eventRiskAcceptable
+            ? `Calendar coverage is verified and reported event risk is ${eventRisk}.`
+            : `Event risk status (${eventRisk}) is not an accepted safe status. NSB blocks new trades.`,
     },
     {
       id: "fundamental-bias",
@@ -665,11 +679,9 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
 
   const reason =
     signal !== "NO TRADE"
-      ? calendarUnverified
-        ? "Technical-only setup confirmed. Economic calendar is unverified, so fundamental and event risks have not been assessed."
-        : fundamentalsComplete
-          ? "Technical setup confirmed, 4H EMA and swing structure do not oppose it, and fundamental checks passed."
-          : "Technical-only setup confirmed. Fundamental data is incomplete; no fundamental direction is assumed."
+      ? fundamentalsComplete
+        ? "Technical setup confirmed, both timeframe structures align, 4H EMA context does not oppose the setup, and fundamental and event-risk checks passed."
+        : "Technical-only setup confirmed. Both timeframe structures align, and calendar coverage and event risk have been verified."
       : failedChecks.length
         ? failedChecks.map((check) => check.detail).join(" ")
         : oneHour.reason || "No trade setup is confirmed.";
@@ -689,11 +701,13 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     oneHourStructureConfirms,
     fourHourStructureConfirms,
     fourHourStructureOpposes,
+    fourHourOpposes,
 
     technicalSetupValid: Boolean(technicalSetupValid),
     fundamentalsComplete,
     analysisMode,
     eventRisk,
+    calendarCoverage,
     calendarUnverified,
     bias,
 

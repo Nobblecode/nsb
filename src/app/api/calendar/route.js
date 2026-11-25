@@ -5,7 +5,9 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const CALENDAR_URL =
-  "https://www.financecalendar.com/wp-json/fc/v1/calendar";
+  "https://showmytrades.com/api/public/calendar/v1";
+
+const CALENDAR_CURRENCIES = "USD,EUR,JPY,AUD";
 
 function normalizeImpact(value) {
   return String(value ?? "").trim().toLowerCase();
@@ -16,41 +18,39 @@ export async function GET(request) {
 
   try {
     const incomingUrl = new URL(request.url);
+
     const requestedImpact = normalizeImpact(
       incomingUrl.searchParams.get("impact") || "all"
     );
 
-    const impact = ["all", "high", "medium", "low"].includes(
-      requestedImpact
-    )
+    const impact = [
+      "all",
+      "high",
+      "medium",
+      "low",
+    ].includes(requestedImpact)
       ? requestedImpact
       : "all";
 
     const url = new URL(CALENDAR_URL);
-    url.searchParams.set("country", "US,EU");
-    url.searchParams.set("tz", "Africa/Lagos");
-    url.searchParams.set("limit", "100");
 
-    const apiKey = process.env.FC_API_KEY;
+    url.searchParams.set(
+      "currency",
+      CALENDAR_CURRENCIES
+    );
 
-if (!apiKey) {
-  return NextResponse.json(
-    {
-      success: false,
-      error: "Finance Calendar API key is missing. Check FC_API_KEY in .env.local.",
-    },
-    { status: 500 }
-  );
-}
+    url.searchParams.set("impact", "all");
+    url.searchParams.set("days", "7");
+    url.searchParams.set("format", "json");
 
-const response = await fetch(url.toString(), {
-  cache: "no-store",
-  signal: AbortSignal.timeout(15000),
-  headers: {
-    "X-API-Key": apiKey,
-    Accept: "application/json",
-  },
-});
+    const response = await fetch(url.toString(), {
+      cache: "no-store",
+      signal: AbortSignal.timeout(15000),
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
     if (!response.ok) {
       console.error("Calendar provider HTTP error:", {
         requestId,
@@ -61,7 +61,7 @@ const response = await fetch(url.toString(), {
         {
           success: false,
           requestId,
-          error: `Finance Calendar returned HTTP ${response.status}. Please try again later.`,
+          error: `ShowMyTrades calendar returned HTTP ${response.status}. Please try again later.`,
           providerStatus: response.status,
         },
         { status: 502 }
@@ -70,7 +70,11 @@ const response = await fetch(url.toString(), {
 
     const data = await response.json();
 
-    if (!data || !Array.isArray(data.events)) {
+
+    if (
+      !data ||
+      !Array.isArray(data.events)
+    ) {
       console.error("Unexpected calendar response:", {
         requestId,
         responseKeys:
@@ -84,19 +88,19 @@ const response = await fetch(url.toString(), {
           success: false,
           requestId,
           error:
-            "Finance Calendar returned an unexpected response. Please try again later.",
+            "ShowMyTrades returned an unexpected calendar response.",
         },
         { status: 502 }
       );
     }
 
-    // Apply the selected filter locally so it does not depend on
-    // whether the upstream provider supports the impact parameter.
+    // Apply the selected impact filter locally.
     const events =
       impact === "all"
         ? data.events
         : data.events.filter(
-            (event) => normalizeImpact(event.impact) === impact
+            (event) =>
+              normalizeImpact(event.impact) === impact
           );
 
     const fetchedAt = new Date().toISOString();
@@ -107,30 +111,40 @@ const response = await fetch(url.toString(), {
       filteredEvents: events.length,
       impact,
       fetchedAt,
+      providerGeneratedAt: data.generated_at || null,
     });
 
     return NextResponse.json(
       {
         success: true,
         requestId,
-        source: "Finance Calendar",
+        source: "ShowMyTrades",
         fetchedAt,
+        serverTime:
+  data.serverTime ??
+  data.server_time ??
+  null,
+
+serverTimeISO:
+  data.serverTimeISO ??
+  data.server_time_iso ??
+  null,
         eventCount: events.length,
         totalEventCount: data.events.length,
         impactFilter: impact,
         events,
         attribution: data.attribution || {
-          source: "financecalendar.com",
-          url: "https://www.financecalendar.com/",
+          source: "ShowMyTrades",
+          url: "https://showmytrades.com/tools/economic-calendar",
         },
         coverageVerified: false,
         providerDataUpdatedAt:
-          data.updated_at ||
-          data.last_updated ||
-          data.updatedAt ||
-          null,
+  data.generatedAt ??
+  data.generated_at ??
+  data.fetchedAt ??
+  null,
         note:
-          "Fetch time indicates when NSB received this response. The provider's underlying data-update time may be unavailable, and calendar completeness has not been verified.",
+          "Calendar data is supplied by ShowMyTrades. Fetch time indicates when NSB received the response. Provider data is cached and calendar completeness is not guaranteed.",
       },
       {
         headers: {

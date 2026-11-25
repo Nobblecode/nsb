@@ -3,37 +3,74 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-function formatEventTime(event) {
+function parseEventDate(event) {
+  // ShowMyTrades supplies Unix timestamps in seconds.
+  if (
+    event.ts !== undefined &&
+    event.ts !== null &&
+    event.ts !== ""
+  ) {
+    const timestamp = Number(event.ts);
+
+    if (Number.isFinite(timestamp)) {
+      return new Date(
+        timestamp < 100000000000 ? timestamp * 1000 : timestamp
+      );
+    }
+  }
+
+  // ISO UTC timestamp supplied by ShowMyTrades.
   const value =
+    event.time ||
     event.time_local ||
     event.release_at_utc ||
-    event.time_utc;
+    event.time_utc ||
+    event.date;
 
-  if (!value) return event.date || "Time not available";
+  if (!value) return null;
 
   const parsed = new Date(value);
 
-  if (Number.isNaN(parsed.getTime())) {
-    return `${event.date || ""} ${value}`.trim();
-  }
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatEventTime(event) {
+  const date = parseEventDate(event);
+
+  if (!date) return "Time not available";
 
   return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Africa/Lagos",
-  }).format(parsed);
+  }).format(date);
 }
 
 function formatTimestamp(value) {
   if (!value) return "Unavailable";
 
-  const date = new Date(value);
+  const timestamp =
+    typeof value === "number" ||
+    (typeof value === "string" && /^\d+$/.test(value))
+      ? Number(value)
+      : null;
+
+  const date =
+    timestamp !== null
+      ? new Date(
+          timestamp < 100000000000
+            ? timestamp * 1000
+            : timestamp
+        )
+      : new Date(value);
 
   if (Number.isNaN(date.getTime())) return "Unavailable";
 
-  return date.toLocaleString("en-GB", {
+  return new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
     timeZone: "Africa/Lagos",
-  });
+  }).format(date);
 }
 
 function impactStyle(impact) {
@@ -98,7 +135,7 @@ export default function EconomicCalendar() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [impact]); // Filter changes request the corresponding event list.
+  }, [impact]);
 
   useEffect(() => {
     loadCalendar();
@@ -114,9 +151,12 @@ export default function EconomicCalendar() {
     <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Economic Calendar</h2>
+          <h2 className="text-lg font-semibold">
+            Economic Calendar
+          </h2>
+
           <p className="mt-1 text-sm text-slate-400">
-            US and EU events · Times shown in Lagos time
+            USD, EUR, JPY and AUD events · Times shown in Lagos time
           </p>
         </div>
 
@@ -126,7 +166,11 @@ export default function EconomicCalendar() {
           disabled={loading || refreshing}
           className="rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50"
         >
-          {refreshing ? "Refreshing..." : loading ? "Loading..." : "Refresh calendar"}
+          {refreshing
+            ? "Refreshing..."
+            : loading
+              ? "Loading..."
+              : "Refresh calendar"}
         </button>
       </div>
 
@@ -152,11 +196,13 @@ export default function EconomicCalendar() {
       {error && (
         <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
           <p>{error}</p>
+
           {events.length > 0 && (
             <p className="mt-1 text-xs">
               Previously loaded events are still displayed. They may be outdated.
             </p>
           )}
+
           <button
             type="button"
             onClick={() => loadCalendar({ manual: true })}
@@ -216,12 +262,16 @@ export default function EconomicCalendar() {
 
               <div>
                 <p className="text-slate-500">Forecast</p>
-                <p>{event.consensus ?? "Unavailable"}</p>
+                <p>
+                  {event.forecast ?? event.consensus ?? "Unavailable"}
+                </p>
               </div>
 
               <div>
                 <p className="text-slate-500">Previous</p>
-                <p>{event.prior ?? "Unavailable"}</p>
+                <p>
+                  {event.previous ?? event.prior ?? "Unavailable"}
+                </p>
               </div>
             </div>
 
@@ -257,12 +307,12 @@ export default function EconomicCalendar() {
       <p className="mt-4 border-t border-slate-800 pt-3 text-xs text-slate-400">
         Calendar data provided by{" "}
         <a
-          href="https://www.financecalendar.com/"
+          href="https://showmytrades.com/tools/economic-calendar"
           target="_blank"
           rel="noreferrer"
           className="text-indigo-300 underline"
         >
-          Finance Calendar
+          ShowMyTrades
         </a>
         . Verify important releases independently.
       </p>

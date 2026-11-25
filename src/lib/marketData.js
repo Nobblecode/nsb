@@ -215,7 +215,7 @@ export async function getCandles(
     });
 
     candleCache.set(cacheKey, {
-      timestamp: Date.now(),
+      timestamp: Date.now(), 
       candles,
     });
 

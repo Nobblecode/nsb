@@ -12,36 +12,30 @@ import { assessAutomaticFundamentals } from "@/lib/automaticFundamentals";
 
 export const dynamic = "force-dynamic";
 
+const CALENDAR_URL =
+  "https://showmytrades.com/api/public/calendar/v1";
+
+const CALENDAR_CURRENCIES = "USD,EUR,JPY,AUD";
 
 async function getEconomicEvents() {
-  const apiKey = process.env.FC_API_KEY;
+  const url = new URL(CALENDAR_URL);
 
-  if (!apiKey) {
-    throw new Error(
-      "Finance Calendar API key is missing. Check FC_API_KEY in .env.local."
-    );
-  }
-
-  const url = new URL(
-    "https://www.financecalendar.com/wp-json/fc/v1/calendar"
-  );
-
-  url.searchParams.set("country", "US,EU,JP,AU");
-  url.searchParams.set("tz", "Africa/Lagos");
-  url.searchParams.set("limit", "100");
+  url.searchParams.set("currency", CALENDAR_CURRENCIES);
+  url.searchParams.set("impact", "all");
+  url.searchParams.set("days", "7");
+  url.searchParams.set("format", "json");
 
   const response = await fetch(url.toString(), {
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
     headers: {
-      "X-API-Key": apiKey,
       Accept: "application/json",
     },
   });
 
   if (!response.ok) {
     throw new Error(
-      `Economic calendar unavailable (${response.status})`
+      `ShowMyTrades calendar unavailable (${response.status})`
     );
   }
 
@@ -49,7 +43,7 @@ async function getEconomicEvents() {
 
   if (!data || !Array.isArray(data.events)) {
     throw new Error(
-      "Economic calendar returned an unexpected format"
+      "ShowMyTrades returned an unexpected calendar format"
     );
   }
 
@@ -59,20 +53,36 @@ async function getEconomicEvents() {
 
 function unavailableFundamentals(note) {
   return {
-    source: "Finance Calendar",
+    source: "ShowMyTrades",
     mode: "automatic",
     bias: "unknown",
     eventRisk: "unknown",
     calendarAvailable: false,
     calendarCoverage: "unverified",
     upcomingHighImpactEvents: [],
+    recentReleasedHighImpactEvents: [],
+    uncertainEvents: [],
     interpretations: [],
+    currencyScores: {},
+    eventCounts: {
+      retrieved: 0,
+      relevant: 0,
+      dated: 0,
+      upcoming: 0,
+      recentReleased: 0,
+      uncertain: 0,
+    },
+    protectionWindow: {
+      beforeMinutes: 60,
+      afterMinutes: 30,
+    },
     complete: false,
     note,
     caution:
-      "Fundamental information is incomplete. Event risk is unknown, so this must not be treated as a safe trading environment.",
+      "Calendar data is unavailable. Event risk is unknown, so NSB must block new setups.",
   };
 }
+
 
 export async function POST(request) {
   try {
@@ -116,18 +126,34 @@ export async function POST(request) {
         })),
     ]);
 
-    const oneHour = analyzeStructure(oneHourCandles, instrument);
-const fourHour = analyzeStructure(fourHourCandles, instrument);
+    const oneHour = analyzeStructure(
+      oneHourCandles,
+      instrument
+    );
 
-    // Keep the existing automatic assessment for EUR/USD.
-    // Other instruments remain incomplete until their
-    // currency-specific calendar assessment is verified.
-    const fundamentals = calendarResult.available
-  ? assessAutomaticFundamentals(
-      calendarResult.events,
-      symbol
-    )
-  : unavailableFundamentals(calendarResult.error);
+    const fourHour = analyzeStructure(
+      fourHourCandles,
+      instrument
+    );
+
+    // Assess the events using the existing fundamentals engine.
+    // Keep calendar coverage unverified because the provider
+    // does not guarantee complete event coverage.
+    const assessedFundamentals = calendarResult.available
+      ? assessAutomaticFundamentals(
+          calendarResult.events,
+          symbol
+        )
+      : unavailableFundamentals(calendarResult.error);
+
+    const fundamentals = {
+      ...assessedFundamentals,
+      source: "ShowMyTrades",
+      calendarCoverage: "unverified",
+      complete: false,
+      caution:
+        "ShowMyTrades calendar coverage is not guaranteed. An absence of detected high-impact events does not establish that the event window is safe.",
+    };
 
     const combined = combineAnalysis(
       oneHour,
@@ -157,9 +183,11 @@ const fourHour = analyzeStructure(fourHourCandles, instrument);
       generatedAt: new Date().toISOString(),
       symbol,
       instrument,
+
       source: fundamentals.calendarAvailable
-  ? "Twelve Data + Finance Calendar (coverage unverified)"
-  : "Twelve Data; fundamentals incomplete",
+        ? "Twelve Data + ShowMyTrades (coverage unverified)"
+        : "Twelve Data; ShowMyTrades fundamentals unavailable",
+
       liveData: true,
 
       oneHour,
@@ -177,10 +205,13 @@ const fourHour = analyzeStructure(fourHourCandles, instrument);
           latestCandleTime: latestOneHourCandle.time,
           latestCandleClose: latestOneHourCandle.close,
           analysisEntry: oneHour.entry,
+
           candleMatchesAnalysisEntry:
-  Number(
-    latestOneHourCandle.close.toFixed(instrument.pricePrecision)
-  ) === oneHour.entry,
+            Number(
+              latestOneHourCandle.close.toFixed(
+                instrument.pricePrecision
+              )
+            ) === oneHour.entry,
 
           signal: oneHour.signal,
           trend: oneHour.trend,
@@ -234,18 +265,55 @@ const fourHour = analyzeStructure(fourHourCandles, instrument);
 
         calendarAvailable:
           fundamentals.calendarAvailable ?? false,
+
+        calendarCoverage:
+          fundamentals.calendarCoverage ?? "unverified",
+
         fundamentalsComplete:
           combined.fundamentalsComplete,
-        eventRisk: fundamentals.eventRisk,
+
+        
+eventRisk: fundamentals.eventRisk,
+
+eventCounts: fundamentals.eventCounts ?? {
+  retrieved: 0,
+  relevant: 0,
+  dated: 0,
+  upcoming: 0,
+  recentReleased: 0,
+  uncertain: 0,
+},
+
+upcomingHighImpactEvents:
+  fundamentals.upcomingHighImpactEvents ?? [],
+
+recentReleasedHighImpactEvents:
+  fundamentals.recentReleasedHighImpactEvents ?? [],
+
+uncertainEvents:
+  fundamentals.uncertainEvents ?? [],
+
+protectionWindow: fundamentals.protectionWindow ?? {
+  beforeMinutes: 60,
+  afterMinutes: 30,
+},
+
+calendarFetchError: calendarResult.error,
+
       },
 
       caveat:
-        "Rule-based educational analysis. The 1H completed candle is the setup reference; the displayed entry is not a guarantee of an executable market price. Fundamental completeness and calendar risk must be evaluated according to the configured trading rules.",
+        "Rule-based educational analysis. The 1H completed candle is the setup reference; the displayed entry is not a guarantee of an executable market price. ShowMyTrades calendar coverage is unverified, and unknown event risk must not be treated as safe.",
     };
 
     console.log(
       `NSB ${symbol} analysis diagnostics:`,
-      JSON.stringify(responseData.dataDiagnostics, null, 2)
+      JSON.stringify(
+        responseData.dataDiagnostics,
+        null,
+        2
+      
+      )
     );
 
     return NextResponse.json(responseData);

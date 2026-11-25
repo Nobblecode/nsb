@@ -2,7 +2,7 @@
 "use client";
 
 import EconomicCalendar from "@/components/EconomicCalendar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -23,11 +23,20 @@ import {
 } from "lucide-react";
 
 import Sidebar from "@/components/Sidebar";
-import { calculatePosition } from "@/lib/riskManagement";
+import { calculatePosition, calculateTradePnl } from "@/lib/riskManagement";
 
-const money = (value) => {
-  if (value == null || !Number.isFinite(Number(value))) return "—";
-  return Number(value).toFixed(5);
+const getPricePrecision = (symbol) => {
+  if (symbol === "XAU/USD") return 2;
+  if (symbol === "USD/JPY" || symbol === "AUD/JPY") return 3;
+  return 5;
+};
+
+const money = (value, symbol = "EUR/USD") => {
+  if (value == null || !Number.isFinite(Number(value))) {
+    return "—";
+  }
+
+  return Number(value).toFixed(getPricePrecision(symbol));
 };
 
 const storedRead = (key, fallback) => {
@@ -111,6 +120,13 @@ function getTargetR(record) {
   return reward / risk;
 }
 
+
+const INSTRUMENT_SPECS = {
+  "EUR/USD": { pipSize: 0.0001, unitsPerLot: 100000, precision: 5 },
+  "XAU/USD": { pipSize: 0.01, unitsPerLot: 100, precision: 2 },
+  "USD/JPY": { pipSize: 0.01, unitsPerLot: 100000, precision: 3 },
+  "AUD/JPY": { pipSize: 0.01, unitsPerLot: 100000, precision: 3 },
+};
 
 function AnalysisChecks({ checks = [] }) {
   if (!checks.length) {
@@ -458,7 +474,7 @@ function BreakoutMonitor({ diagnostics, oneHour }) {
         <div className="rounded-xl border border-[#26354c] bg-[#0b1525] p-4">
           <p className="text-xs text-slate-400">Latest 1H close</p>
           <p className="mt-2 text-xl font-bold tabular-nums text-white">
-            {validClose ? close.toFixed(5) : "—"}
+            {validClose ? close.toFixed(getPricePrecision(diagnostics?.symbol || oneHour?.symbol || "EUR/USD")) : "—"}
           </p>
           <p className="mt-1 text-xs text-slate-500">
             Completed candle data
@@ -468,7 +484,7 @@ function BreakoutMonitor({ diagnostics, oneHour }) {
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
           <p className="text-xs text-emerald-200">Potential BUY level</p>
           <p className="mt-2 text-xl font-bold tabular-nums text-emerald-200">
-            {validBuy ? buyLevel.toFixed(5) : "—"}
+            {validBuy ? buyLevel.toFixed(getPricePrecision(diagnostics?.symbol || oneHour?.symbol || "EUR/USD")) : "—"}
           </p>
           <p className="mt-1 text-xs text-slate-400">
             {buyDistance == null
@@ -482,7 +498,7 @@ function BreakoutMonitor({ diagnostics, oneHour }) {
         <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
           <p className="text-xs text-rose-200">Potential SELL level</p>
           <p className="mt-2 text-xl font-bold tabular-nums text-rose-200">
-            {validSell ? sellLevel.toFixed(5) : "—"}
+            {validSell ? sellLevel.toFixed(getPricePrecision(diagnostics?.symbol || oneHour?.symbol || "EUR/USD")) : "—"}
           </p>
           <p className="mt-1 text-xs text-slate-400">
             {sellDistance == null
@@ -735,7 +751,7 @@ function SignalPerformanceDashboard({
               {automaticWinRate == null ? "—" : `${automaticWinRate.toFixed(1)}%`}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              Wins ÷ resolved signals
+              Wins ÷ resolved signals; small samples are not reliable
             </p>
           </div>
 
@@ -774,6 +790,9 @@ function SignalPerformanceDashboard({
           </div>
         </div>
 
+        <p className="mt-3 text-xs leading-5 text-amber-200">
+          {resolved.length < 30 ? `Small sample: ${resolved.length} resolved signals. Treat the win rate and profit factor as preliminary until at least 30 outcomes are available.` : `Sample size: ${resolved.length} resolved signals. Results remain historical estimates, not a forecast.`}
+        </p>
         <p className="mt-3 text-xs leading-5 text-slate-500">
           Automatic results assume entry at the recorded signal entry and
           evaluation at TP1 or stop-loss. They do not include spread, slippage,
@@ -830,7 +849,7 @@ function SignalPerformanceDashboard({
                     {item.candleTime || "Time unavailable"}
                   </span>
                   <p className="mt-1 text-xs text-slate-500">
-                    Entry {Number(item.entry).toFixed(5)} · SL {Number(item.stopLoss).toFixed(5)} · TP1 {Number(item.takeProfits?.[0]).toFixed(5)}
+                    Entry {money(item.entry, item.symbol || "EUR/USD")} · SL {money(item.stopLoss, item.symbol || "EUR/USD")} · TP1 {money(item.takeProfits?.[0], item.symbol || "EUR/USD")}
                   </p>
                 </div>
                 <div className="text-right">
@@ -858,7 +877,62 @@ function SignalPerformanceDashboard({
   );
 }
 
+function candleTouchesLevel(candle, signal, level, type) {
+  const high = Number(candle?.high);
+  const low = Number(candle?.low);
+  const price = Number(level);
 
+  if (
+    !Number.isFinite(high) ||
+    !Number.isFinite(low) ||
+    !Number.isFinite(price)
+  ) {
+    return false;
+  }
+
+  if (signal === "BUY") {
+    return type === "stop"
+      ? low <= price
+      : type === "target"
+        ? high >= price
+        : false;
+  }
+
+  if (signal === "SELL") {
+    return type === "stop"
+      ? high >= price
+      : type === "target"
+        ? low <= price
+        : false;
+  }
+
+  return false;
+}
+
+function protectiveStopForStage(trade, stage) {
+  const entry = Number(trade.entry);
+  const targets = trade.takeProfits || [];
+
+  if (!Number.isFinite(entry)) {
+    throw new Error("Invalid trade entry.");
+  }
+
+  if (stage === 1) {
+    return entry;
+  }
+
+  if (stage === 2) {
+    const target1 = Number(targets[0]);
+
+    if (!Number.isFinite(target1)) {
+      throw new Error("Invalid TP1 level.");
+    }
+
+    return target1;
+  }
+
+  return Number(trade.stopLoss);
+}
 
 export default function Home() {
  const [interval, setInterval] = useState("1h");
@@ -873,11 +947,17 @@ const [symbol, setSymbol] = useState("EUR/USD");
   const [analysisError, setAnalysisError] = useState("");
 
   const [balance, setBalance] = useState("10000");
+  const [usdJpyRate, setUsdJpyRate] = useState(null);
   const [riskPercent, setRiskPercent] = useState("1");
 
   const [trades, setTrades] = useState([]);
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [signalPerformance, setSignalPerformance] = useState([]);
+  const signalPerformanceRef = useRef([]);
+useEffect(() => {
+  signalPerformanceRef.current = signalPerformance;
+}, [signalPerformance]);
+  
   const [tradeOutcome, setTradeOutcome] = useState("win");
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [calendarExpanded, setCalendarExpanded] = useState(false);
@@ -913,162 +993,49 @@ setSignalPerformance(
   }, [balance]);
 
   const evaluateSignalOutcomes = useCallback(async () => {
-  try {
-    const response = await fetch("/api/market?interval=1h", {
-      cache: "no-store",
-    });
-
-    const data = await response.json();
-
-    if (!response.ok || !Array.isArray(data.candles)) {
-      throw new Error(data.error || "Could not retrieve 1H candles.");
-    }
-
-    const candles = data.candles
-      .filter((candle) =>
-        Number.isFinite(getCandleTime(candle)) &&
-        validCandlePrices(candle)
-      )
-      .sort((a, b) => getCandleTime(a) - getCandleTime(b));
-
-    if (!candles.length) {
-      throw new Error("The 1H response contained no valid candles.");
-    }
-
-    setSignalPerformance((current) => {
-      let changed = false;
-
-      const next = current.map((record) => {
-        if (record.outcome !== "pending") return record;
-
-        const signalTimestamp = parseCandleTime(record.candleTime);
-        const entry = Number(record.entry);
-        const stopLoss = Number(record.stopLoss);
-        const target = Number(record.takeProfits?.[0]);
-        const risk = Math.abs(entry - stopLoss);
-        const targetR = getTargetR(record);
-
-        if (
-          !Number.isFinite(signalTimestamp) ||
-          !Number.isFinite(entry) ||
-          !Number.isFinite(stopLoss) ||
-          !Number.isFinite(target) ||
-          risk <= 0 ||
-          targetR == null
-        ) {
-          changed = true;
-          return {
-            ...record,
-            outcome: "invalid",
-            resolution: "invalid-signal-data",
-            resolvedAt: new Date().toISOString(),
-          };
-        }
-
-        // Never evaluate the candle that generated the signal.
-        const futureCandles = candles.filter(
-          (candle) => getCandleTime(candle) > signalTimestamp
-        );
-
-        const candlesToCheck = futureCandles.slice(0, 72);
-
-        if (!candlesToCheck.length) return record;
-
-        const isBuy = record.signal === "BUY";
-
-        for (let i = 0; i < candlesToCheck.length; i++) {
-          const candle = candlesToCheck[i];
-          const high = Number(candle.high);
-          const low = Number(candle.low);
-
-          const stopHit = isBuy
-            ? low <= stopLoss
-            : high >= stopLoss;
-
-          const targetHit = isBuy
-            ? high >= target
-            : low <= target;
-
-          const base = {
-            ...record,
-            evaluatedCandles: i + 1,
-            resolvedAt: new Date().toISOString(),
-          };
-
-          // OHLC candles do not reveal the order of intrabar touches.
-          if (stopHit && targetHit) {
-            changed = true;
-            return {
-              ...base,
-              outcome: "ambiguous",
-              realizedR: -1,
-              resolution: "stop-and-target-same-candle",
-            };
+    try {
+      const pendingSymbols = [...new Set(signalPerformanceRef.current.filter((item) => item.outcome === "pending").map((item) => item.symbol || "EUR/USD"))];
+      if (!pendingSymbols.length) return;
+      const responses = await Promise.all(pendingSymbols.map(async (marketSymbol) => {
+        const response = await fetch(`/api/market?interval=1h&symbol=${encodeURIComponent(marketSymbol)}`, { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !Array.isArray(data.candles)) throw new Error(data.error || `Could not retrieve ${marketSymbol} candles.`);
+        const candles = data.candles.filter((c) => Number.isFinite(getCandleTime(c)) && validCandlePrices(c)).sort((a,b) => getCandleTime(a)-getCandleTime(b));
+        return [marketSymbol, candles];
+      }));
+      const bySymbol = new Map(responses);
+      setSignalPerformance((current) => {
+        let changed = false;
+        const next = current.map((record) => {
+          if (record.outcome !== "pending") return record;
+          const candles = bySymbol.get(record.symbol || "EUR/USD") || [];
+          const signalTime = parseCandleTime(record.candleTime);
+          const entry = Number(record.entry), stop = Number(record.stopLoss), target = Number(record.takeProfits?.[0]);
+          const risk = Math.abs(entry - stop), targetR = getTargetR(record);
+          if (!Number.isFinite(signalTime) || !Number.isFinite(entry) || !Number.isFinite(stop) || !Number.isFinite(target) || risk <= 0 || targetR == null) {
+            changed = true; return { ...record, outcome: "invalid", resolution: "invalid-signal-data", resolvedAt: new Date().toISOString() };
           }
-
-          if (stopHit) {
-            changed = true;
-            return {
-              ...base,
-              outcome: "loss",
-              realizedR: -1,
-              resolution: "stop-loss",
-            };
+          const future = candles.filter((c) => getCandleTime(c) > signalTime).slice(0,72);
+          if (!future.length) return record;
+          const isBuy = record.signal === "BUY";
+          for (let i=0; i<future.length; i++) {
+            const c=future[i], high=Number(c.high), low=Number(c.low);
+            const stopHit = isBuy ? low <= stop : high >= stop;
+            const targetHit = isBuy ? high >= target : low <= target;
+            const base={...record,evaluatedCandles:i+1,resolvedAt:new Date().toISOString()};
+            if (stopHit && targetHit) { changed=true; return {...base,outcome:"ambiguous",realizedR:-1,resolution:"stop-and-target-same-candle"}; }
+            if (stopHit) { changed=true; return {...base,outcome:"loss",realizedR:-1,resolution:"stop-loss"}; }
+            if (targetHit) { changed=true; return {...base,outcome:"win",realizedR:targetR,resolution:"take-profit-1"}; }
           }
-
-          if (targetHit) {
-            changed = true;
-            return {
-              ...base,
-              outcome: "win",
-              realizedR: targetR,
-              resolution: "take-profit-1",
-            };
-          }
-        }
-
-        const evaluatedCount = candlesToCheck.length;
-
-        if (evaluatedCount >= 72) {
-          changed = true;
-          return {
-            ...record,
-            outcome: "expired",
-            realizedR: null,
-            resolution: "72-candle-limit",
-            evaluatedCandles: 72,
-            resolvedAt: new Date().toISOString(),
-          };
-        }
-
-        if (record.evaluatedCandles !== evaluatedCount) {
-          changed = true;
-          return {
-            ...record,
-            evaluatedCandles: evaluatedCount,
-          };
-        }
-
-        return record;
+          if (future.length >= 72) { changed=true; return {...record,outcome:"expired",realizedR:null,resolution:"72-candle-limit",evaluatedCandles:72,resolvedAt:new Date().toISOString()}; }
+          if (record.evaluatedCandles !== future.length) { changed=true; return {...record,evaluatedCandles:future.length}; }
+          return record;
+        });
+        if (changed) { try { window.localStorage.setItem("nsb-signal-performance",JSON.stringify(next)); } catch(e) { console.error("Could not update signal performance:",e); } }
+        return next;
       });
-
-      if (changed) {
-        try {
-          window.localStorage.setItem(
-            "nsb-signal-performance",
-            JSON.stringify(next)
-          );
-        } catch (error) {
-          console.error("Could not update signal performance:", error);
-        }
-      }
-
-      return next;
-    });
-  } catch (error) {
-    console.error("Signal outcome evaluation failed:", error);
-  }
-}, []);
+    } catch (error) { console.error("Signal outcome evaluation failed:",error); }
+  }, []);
 
   const fetchMarket = useCallback(async (tf = interval) => {
     setLoadingMarket(true);
@@ -1237,7 +1204,8 @@ const saveEligibleSignal = (result) => {
   }
 
   const candleTime = new Date(candleTimestamp).toISOString();
-  const id = `${candleTime}-${signal}`;
+  const signalSymbol = result.symbol || symbol;
+  const id = `${signalSymbol}-${candleTime}-${signal}`;
 
   setSignalPerformance((current) => {
     if (current.some((item) => item.id === id)) return current;
@@ -1245,6 +1213,7 @@ const saveEligibleSignal = (result) => {
     const record = {
       id,
       candleTime,
+      symbol: signalSymbol,
       recordedAt: new Date().toISOString(),
       signal,
       entry,
@@ -1364,27 +1333,26 @@ await evaluateSignalOutcomes();
 }, [analysis]);
 
   const position = useMemo(() => {
-    if (
-      symbol !== "EUR/USD" ||
-      !trade ||
-      !["BUY", "SELL"].includes(trade.signal) ||
-      trade.entry == null ||
-      trade.stopLoss == null
-    ) {
-      return null;
-    }
-
+    if (!trade || !["BUY", "SELL"].includes(trade.signal) || trade.entry == null || trade.stopLoss == null) return null;
+    const spec = INSTRUMENT_SPECS[symbol];
+    const conversion = symbol.endsWith("/JPY") ? (symbol === "USD/JPY" ? (market?.symbol === symbol ? Number(market?.latest?.close) : NaN) : Number(usdJpyRate)) : 1;
+    if (!spec || !Number.isFinite(conversion) || conversion <= 0) return null;
     try {
-      return calculatePosition({
-        accountBalance: balance,
-        riskPercent,
-        entry: trade.entry,
-        stopLoss: trade.stopLoss,
-      });
-    } catch {
-      return null;
+      return calculatePosition({ accountBalance: balance, riskPercent, entry: trade.entry, stopLoss: trade.stopLoss, symbol, pipSize: spec.pipSize, unitsPerLot: spec.unitsPerLot, quoteToUsdRate: symbol.endsWith("/JPY") ? 1 / conversion : 1 });
+    } catch { return null; }
+  }, [trade, balance, riskPercent, symbol, market, usdJpyRate]);
+
+  useEffect(() => {
+    if (!symbol.endsWith("/JPY")) return;
+    if (symbol === "USD/JPY" && Number.isFinite(Number(market?.latest?.close))) {
+      setUsdJpyRate(Number(market.latest.close)); return;
     }
-  }, [trade, balance, riskPercent]);
+    let active = true;
+    fetch("/api/market?interval=1min&symbol=USD%2FJPY", { cache: "no-store" })
+      .then((r) => r.json()).then((data) => { if (active && data.latest?.close) setUsdJpyRate(Number(data.latest.close)); })
+      .catch((e) => console.error("USD/JPY conversion quote unavailable:", e));
+    return () => { active = false; };
+  }, [symbol, market]);
 
   const clearAnalysisHistory = () => {
     const confirmed = window.confirm(
@@ -1415,56 +1383,152 @@ await evaluateSignalOutcomes();
     }
   };
 
+    const clearPaperJournal = () => {
+    if (trades.length === 0) return;
+
+    const confirmed = window.confirm(
+      "Are you sure you want to clear the entire paper trading journal, including all open and closed trades? This action cannot be undone."
+    );
+
+    if (!confirmed) return;
+
+    // Clears only the paper trading journal.
+    saveTrades([]);
+  };
+
   const openPaperTrade = () => {
-    const currentEventRisk =
-      fundamentals?.eventRisk || combined?.eventRisk || "unknown";
-    const mandatoryChecksPassed =
-      Array.isArray(combined?.checks) &&
-      combined.checks.every((check) => check.passed === true);
-
-    // Fail closed: never open a new paper position with unverified calendar risk.
-    if (
-      !trade ||
-      !["BUY", "SELL"].includes(trade.signal) ||
-      !position ||
-      currentEventRisk === "unknown" ||
-      currentEventRisk === "high" ||
-      !mandatoryChecksPassed
-    ) {
-      return;
-    }
-
+    const currentEventRisk = fundamentals?.eventRisk || combined?.eventRisk || "unknown";
+    const mandatoryChecksPassed = Array.isArray(combined?.checks) && combined.checks.every((check) => check.passed === true);
+    if (!trade || !["BUY", "SELL"].includes(trade.signal) || !position || currentEventRisk === "unknown" || currentEventRisk === "high" || !mandatoryChecksPassed) return;
+    const duplicate = trades.some((item) => item.status === "open" && item.symbol === symbol && item.signal === trade.signal && Number(item.entry) === Number(trade.entry) && Number(item.stopLoss) === Number(trade.stopLoss));
+    if (duplicate) { window.alert("An equivalent paper trade is already open for this instrument and setup."); return; }
+    const spec = INSTRUMENT_SPECS[symbol];
+    const conversion = symbol.endsWith("/JPY") ? (symbol === "USD/JPY" ? (market?.symbol === symbol ? Number(market?.latest?.close) : NaN) : Number(usdJpyRate)) : 1;
     const paperTrade = {
-      id: crypto.randomUUID(),
-      symbol,
-      createdAt: new Date().toISOString(),
-      signal: trade.signal,
-      entry: trade.entry,
-      stopLoss: trade.stopLoss,
-      takeProfits: trade.takeProfits,
-      riskAmount: position.riskAmount,
-      lots: position.lots,
-      status: "open",
-      outcome: null,
+      id: crypto.randomUUID(), symbol, createdAt: new Date().toISOString(), signal: trade.signal,
+      entry: trade.entry, initialStopLoss: trade.stopLoss, stopLoss: trade.stopLoss,
+      takeProfits: trade.takeProfits, reachedTarget: 0, riskAmount: position.riskAmount,
+      lots: position.lots, unitsPerLot: spec.unitsPerLot,
+      quoteToUsdRateAtEntry: symbol.endsWith("/JPY") && conversion > 0 ? 1 / conversion : 1,
+      status: "open", outcome: null, lastEvaluatedCandleTime: null,
+      managementHistory: [{ at: new Date().toISOString(), event: "opened", stopLoss: trade.stopLoss }],
     };
-
     saveTrades([paperTrade, ...trades]);
   };
 
-  const closePaperTrade = (id) => {
-    saveTrades(
-      trades.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: "closed",
-              outcome: tradeOutcome,
-              closedAt: new Date().toISOString(),
-            }
-          : item
-      )
-    );
+  const applyBalanceChange = (pnl, tradeId) => {
+    if (!Number.isFinite(Number(pnl))) return;
+    setBalance((current) => {
+      const next = String(Math.max(0, Number(current) + Number(pnl)).toFixed(2));
+      try { window.localStorage.setItem("nsb-account-balance", JSON.stringify(next)); } catch (e) { console.error("Could not persist account balance:", e); }
+      return next;
+    });
   };
+
+  const closePaperTrade = async (id) => {
+    const item = trades.find((tradeItem) => tradeItem.id === id && tradeItem.status === "open");
+    if (!item) return;
+    try {
+      const response = await fetch(`/api/market?interval=1min&symbol=${encodeURIComponent(item.symbol || "EUR/USD")}`, { cache: "no-store" });
+      const data = await response.json();
+      const currentPrice = Number(data.latest?.close);
+      if (!response.ok || !Number.isFinite(currentPrice) || currentPrice <= 0) throw new Error(data.error || "Current market quote unavailable.");
+      let quoteRate = 1;
+      if ((item.symbol || "EUR/USD").endsWith("/JPY")) {
+        let usdJpy = item.symbol === "USD/JPY" ? currentPrice : Number(usdJpyRate);
+        if (!(usdJpy > 0)) {
+          const fxResponse = await fetch("/api/market?interval=1min&symbol=USD%2FJPY", { cache: "no-store" });
+          const fxData = await fxResponse.json();
+          usdJpy = Number(fxData.latest?.close);
+        }
+        if (!Number.isFinite(usdJpy) || usdJpy <= 0) throw new Error("USD/JPY conversion quote is unavailable.");
+        quoteRate = 1 / usdJpy;
+      }
+      const pnl = calculateTradePnl({ symbol: item.symbol || "EUR/USD", signal: item.signal, entry: item.entry, exitPrice: currentPrice, lots: item.lots, unitsPerLot: item.unitsPerLot, quoteToUsdRate: quoteRate });
+      const closed = { ...item, status: "closed", outcome: pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven", manualGrade: tradeOutcome, exitPrice: currentPrice, realizedPnl: pnl, closedAt: new Date().toISOString(), closeReason: "manual-close" };
+      saveTrades(trades.map((t) => t.id === id ? closed : t));
+      applyBalanceChange(pnl, id);
+    } catch (error) { window.alert(`Trade was not closed: ${error.message}`); }
+  };
+
+  // Poll one-minute completed candles for every open instrument. Each candle is processed once.
+  useEffect(() => {
+    if (!trades.some((t) => t.status === "open")) return;
+    let cancelled = false;
+    const monitor = async () => {
+      const openSymbols = [...new Set(trades.filter((t) => t.status === "open").map((t) => t.symbol || "EUR/USD"))];
+      const quoteMap = new Map();
+      await Promise.all(openSymbols.map(async (sym) => {
+        try {
+          const r = await fetch(`/api/market?interval=1min&symbol=${encodeURIComponent(sym)}`, { cache: "no-store" });
+          const d = await r.json(); if (r.ok && Array.isArray(d.candles)) quoteMap.set(sym, d.candles.filter((c) => validCandlePrices(c) && Number.isFinite(getCandleTime(c))).sort((a,b) => getCandleTime(a)-getCandleTime(b)));
+        } catch (e) { console.error(`Trade monitor failed for ${sym}:`, e); }
+      }));
+      if (cancelled || !quoteMap.size) return;
+      let conversionSpot = Number(usdJpyRate);
+      if (openSymbols.some((sym) => sym.endsWith("/JPY") && sym !== "USD/JPY") && !(conversionSpot > 0)) {
+        try {
+          const fxResponse = await fetch("/api/market?interval=1min&symbol=USD%2FJPY", { cache: "no-store" });
+          const fxData = await fxResponse.json();
+          if (fxResponse.ok && Number(fxData.latest?.close) > 0) conversionSpot = Number(fxData.latest.close);
+        } catch (e) { console.error("JPY conversion quote unavailable for open trades:", e); }
+      }
+      let balanceDelta = 0;
+      let changed = false;
+      const updated = trades.map((original) => {
+        if (original.status !== "open") return original;
+        const sym = original.symbol || "EUR/USD";
+        const candles = quoteMap.get(sym) || [];
+        const fresh = candles.filter((c) => getCandleTime(c) > parseCandleTime(original.lastEvaluatedCandleTime || original.createdAt));
+        if (!fresh.length) return original;
+        let t = { ...original, managementHistory: [...(original.managementHistory || [])] };
+        for (const candle of fresh) {
+          const stage = Number(t.reachedTarget || 0);
+          const activeStop = Number(t.stopLoss);
+          const stopHit = candleTouchesLevel(candle, t.signal, activeStop, "stop");
+          const hitTargets = (t.takeProfits || []).map((level, index) => candleTouchesLevel(candle, t.signal, Number(level), "target") ? index + 1 : 0).filter(Boolean);
+          const highestHit = hitTargets.length ? Math.max(...hitTargets) : stage;
+          // OHLC cannot reveal intrabar ordering. If active stop and any new target are both touched, assume stop first.
+          if (stopHit) {
+            const exitPrice = activeStop;
+            const conversion = sym.endsWith("/JPY") ? (sym === "USD/JPY" ? 1 / Number(candle.close) : (conversionSpot > 0 ? 1 / conversionSpot : NaN)) : 1;
+            if (!Number.isFinite(conversion)) { t.lastEvaluatedCandleTime = candle.time; continue; }
+            const pnl = calculateTradePnl({ symbol: sym, signal: t.signal, entry: t.entry, exitPrice, lots: t.lots, unitsPerLot: t.unitsPerLot, quoteToUsdRate: conversion });
+            t = { ...t, status: "closed", outcome: pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven", exitPrice, realizedPnl: pnl, closedAt: new Date().toISOString(), closeReason: stage > 0 ? `protective-stop-after-TP${stage}` : "initial-stop-loss", lastEvaluatedCandleTime: candle.time, managementHistory: [...t.managementHistory, { at: new Date().toISOString(), event: "stop-hit", stopLoss: activeStop, candleTime: candle.time, pnl }] };
+            balanceDelta += pnl; changed = true; break;
+          }
+          if (highestHit > stage) {
+            if (highestHit >= 3) {
+              const exitPrice = Number(t.takeProfits[2]);
+              const conversion = sym.endsWith("/JPY") ? (sym === "USD/JPY" ? 1 / Number(candle.close) : (conversionSpot > 0 ? 1 / conversionSpot : NaN)) : 1;
+              if (!Number.isFinite(conversion)) { t.lastEvaluatedCandleTime = candle.time; continue; }
+              const pnl = calculateTradePnl({ symbol: sym, signal: t.signal, entry: t.entry, exitPrice, lots: t.lots, unitsPerLot: t.unitsPerLot, quoteToUsdRate: conversion });
+              t = { ...t, reachedTarget: 3, status: "closed", outcome: pnl > 0 ? "win" : pnl < 0 ? "loss" : "breakeven", exitPrice, realizedPnl: pnl, closedAt: new Date().toISOString(), closeReason: "take-profit-3", lastEvaluatedCandleTime: candle.time, managementHistory: [...t.managementHistory, { at: new Date().toISOString(), event: "TP3-hit-and-closed", stopLoss: Number(t.takeProfits[1]), candleTime: candle.time, pnl }] };
+              balanceDelta += pnl; changed = true; break;
+            }
+            const nextStop = protectiveStopForStage(t, highestHit);
+            t = { ...t, reachedTarget: highestHit, stopLoss: nextStop, lastEvaluatedCandleTime: candle.time, managementHistory: [...t.managementHistory, { at: new Date().toISOString(), event: `TP${highestHit}-hit`, stopLoss: nextStop, candleTime: candle.time }] };
+            changed = true;
+          } else {
+            t.lastEvaluatedCandleTime = candle.time;
+          }
+        }
+        if (JSON.stringify(t) !== JSON.stringify(original)) changed = true;
+        return t;
+      });
+      if (changed && !cancelled) {
+        saveTrades(updated);
+        if (balanceDelta !== 0) setBalance((current) => {
+          const next = String(Math.max(0, Number(current) + balanceDelta).toFixed(2));
+          try { window.localStorage.setItem("nsb-account-balance", JSON.stringify(next)); } catch (e) { console.error("Could not persist realized P/L:", e); }
+          return next;
+        });
+      }
+    };
+    void monitor();
+    const timer = window.setInterval(() => void monitor(), 60_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [trades, usdJpyRate]);
 
   const closedTrades = trades.filter((item) => item.status === "closed");
   const openTrades = trades.filter((item) => item.status === "open");
@@ -1549,7 +1613,7 @@ await evaluateSignalOutcomes();
             </div>
 
             <div className="mt-3 text-2xl font-bold tabular-nums">
-              {money(price)}
+              {money(price, symbol)}
             </div>
 
             <div className="mt-1 text-xs text-slate-500">
@@ -1591,6 +1655,7 @@ await evaluateSignalOutcomes();
             <div className="mt-1 text-xs text-slate-500">
               {openTrades.length} open · {closedTrades.length} closed
             </div>
+            <div className="mt-2 text-xs text-slate-400">Account balance: ${Number(balance || 0).toFixed(2)}</div>
           </div>
 
           <div className="kpi">
@@ -1779,7 +1844,7 @@ await evaluateSignalOutcomes();
                   </div>
 
                   <p className="mt-2 text-xs leading-5 text-slate-400">
-                    EMA20 {money(fourHour?.ema20)} · EMA50 {money(fourHour?.ema50)}
+                    EMA20 {money(fourHour?.ema20, symbol)} · EMA50 {money(fourHour?.ema50, symbol)}
                   </p>
                 </div>
 
@@ -1866,18 +1931,18 @@ await evaluateSignalOutcomes();
                     <div className="mt-3 grid grid-cols-2 gap-3">
                       <div>
                         <p className="text-xs text-slate-400">Entry</p>
-                        <p className="mt-1 font-semibold">{money(trade?.entry)}</p>
+                        <p className="mt-1 font-semibold">{money(trade?.entry, symbol)}</p>
                       </div>
 
                       <div>
                         <p className="text-xs text-slate-400">Stop loss</p>
-                        <p className="mt-1 font-semibold">{money(trade?.stopLoss)}</p>
+                        <p className="mt-1 font-semibold">{money(trade?.stopLoss, symbol)}</p>
                       </div>
 
                       {(trade?.takeProfits || []).map((target, index) => (
                         <div key={`tp-${index}`}>
                           <p className="text-xs text-slate-400">Take profit {index + 1}</p>
-                          <p className="mt-1 font-semibold">{money(target)}</p>
+                          <p className="mt-1 font-semibold">{money(target, symbol)}</p>
                         </div>
                       ))}
                     </div>
@@ -1902,9 +1967,9 @@ await evaluateSignalOutcomes();
                           <input
                             className="mt-1 w-full rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-sm text-white"
                             type="number"
-                            min="0.1"
-                            max="10"
-                            step="0.1"
+                            min="0.01"
+                            max="2"
+                            step="0.01"
                             value={riskPercent}
                             onChange={(event) => setRiskPercent(event.target.value)}
                           />
@@ -1928,8 +1993,7 @@ await evaluateSignalOutcomes();
                         </div>
                       ) : (
                         <p className="mt-3 text-xs leading-5 text-slate-400">
-                          Position sizing appears when a BUY or SELL decision
-                          has valid entry and stop-loss levels.
+                          Position sizing requires valid trade levels and, for JPY pairs, a current USD/JPY conversion quote.
                         </p>
                       )}
 
@@ -1939,7 +2003,8 @@ await evaluateSignalOutcomes();
                         disabled={
                           !trade ||
                           !["BUY", "SELL"].includes(trade.signal) ||
-                          !position
+                          !position ||
+                          trades.some((item) => item.status === "open" && item.symbol === symbol && item.signal === trade.signal && Number(item.entry) === Number(trade.entry) && Number(item.stopLoss) === Number(trade.stopLoss))
                         }
                       >
                         Open paper trade
@@ -2114,16 +2179,16 @@ await evaluateSignalOutcomes();
                         <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
                           <div>
                             <p className="text-xs text-slate-500">Entry</p>
-                            <p className="mt-1 text-slate-200">{money(item.entry)}</p>
+                            <p className="mt-1 text-slate-200">{money(item.entry, item.symbol || "EUR/USD")}</p>
                           </div>
                           <div>
                             <p className="text-xs text-slate-500">Stop loss</p>
-                            <p className="mt-1 text-slate-200">{money(item.stopLoss)}</p>
+                            <p className="mt-1 text-slate-200">{money(item.stopLoss, item.symbol || "EUR/USD")}</p>
                           </div>
                           {(item.takeProfits || []).map((target, index) => (
                             <div key={`${item.id}-tp-${index}`}>
                               <p className="text-xs text-slate-500">Take profit {index + 1}</p>
-                              <p className="mt-1 text-slate-200">{money(target)}</p>
+                              <p className="mt-1 text-slate-200">{money(target, symbol)}</p>
                             </div>
                           ))}
                         </div>
@@ -2160,11 +2225,24 @@ await evaluateSignalOutcomes();
         </section>
 
         <section className="panel mt-5 p-4 md:p-5">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold">Paper trading journal</h2>
-            <p className="mt-1 text-xs text-slate-400">
-              Simulated positions saved in this browser only.
-            </p>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">
+                Paper trading journal
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Simulated positions saved in this browser only.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={clearPaperJournal}
+              disabled={trades.length === 0}
+            >
+              Clear Journal
+            </button>
           </div>
 
           {trades.length === 0 ? (
@@ -2207,11 +2285,11 @@ await evaluateSignalOutcomes();
                       <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
                         <div>
                           <p className="text-xs text-slate-400">Entry</p>
-                          <p className="mt-1">{money(item.entry)}</p>
+                          <p className="mt-1">{money(item.entry, item.symbol || "EUR/USD")}</p>
                         </div>
                         <div>
                           <p className="text-xs text-slate-400">Stop loss</p>
-                          <p className="mt-1">{money(item.stopLoss)}</p>
+                          <p className="mt-1">{money(item.stopLoss, item.symbol || "EUR/USD")}</p>
                         </div>
                         <div>
                           <p className="text-xs text-slate-400">Risk amount</p>
@@ -2225,6 +2303,12 @@ await evaluateSignalOutcomes();
                             {Number(item.lots || 0).toFixed(2)}
                           </p>
                         </div>
+                      </div>
+                      <div className="mt-3 rounded-lg border border-[#26354c] bg-slate-900/40 p-3 text-xs">
+                        <p className="font-semibold text-slate-200">Progressive protection</p>
+                        <p className="mt-1 text-slate-400">TP stage: {Number(item.reachedTarget || 0)}/3 · Active stop: {money(item.stopLoss, item.symbol || "EUR/USD")}</p>
+                        <p className="mt-1 text-slate-400">Realized P/L: {item.realizedPnl == null ? "Not closed" : `${Number(item.realizedPnl) >= 0 ? "+" : ""}$${Number(item.realizedPnl).toFixed(2)}`}</p>
+                        {item.managementHistory?.length > 0 && <p className="mt-1 text-slate-500">Latest update: {item.managementHistory[item.managementHistory.length - 1].event}</p>}
                       </div>
                     </div>
 
@@ -2250,7 +2334,7 @@ await evaluateSignalOutcomes();
                   {item.status === "open" && (
                     <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#26354c] pt-3">
                       <label className="text-xs text-slate-400">
-                        Grade outcome
+                        Outcome note
                         <select
                           className="ml-2 rounded-lg border border-[#334155] bg-[#111d30] px-3 py-2 text-white"
                           value={tradeOutcome}

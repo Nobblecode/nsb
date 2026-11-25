@@ -1,32 +1,35 @@
 
 import { NextResponse } from "next/server";
-import { getCandles } from "@/lib/marketData";
+import {
+  getCandles,
+  INSTRUMENTS,
+} from "@/lib/marketData";
 
 export const dynamic = "force-dynamic";
 
-const SUPPORTED_INSTRUMENTS = [
-  "EUR/USD",
-  "XAU/USD",
-  "USD/JPY",
-  "AUD/JPY",
-];
+const SUPPORTED_INTERVALS = ["1min", "1h", "4h"];
 
 export async function GET(request) {
   const searchParams = new URL(request.url).searchParams;
 
-  const interval = searchParams.get("interval") || "1h";
+  const requestedInterval = searchParams.get("interval") || "1h";
+  const interval =
+    requestedInterval === "1m" ? "1min" : requestedInterval;
+
   const symbol = (
     searchParams.get("symbol") || "EUR/USD"
   ).toUpperCase();
 
-  if (!["1h", "4h"].includes(interval)) {
+  if (!SUPPORTED_INTERVALS.includes(interval)) {
     return NextResponse.json(
-      { error: "Only 1h and 4h intervals are supported." },
+      {
+        error: "Only 1min, 1h and 4h intervals are supported.",
+      },
       { status: 400 }
     );
   }
 
-  if (!SUPPORTED_INSTRUMENTS.includes(symbol)) {
+  if (!Object.hasOwn(INSTRUMENTS, symbol)) {
     return NextResponse.json(
       { error: "Unsupported trading instrument." },
       { status: 400 }
@@ -52,16 +55,17 @@ export async function GET(request) {
       }
     );
   } catch (error) {
+    console.error("Market data API error:", error);
+
     return NextResponse.json(
       {
         error: error.message || "Market data unavailable",
         symbol,
+        interval,
         source: "Twelve Data",
         liveData: false,
       },
-      {
-        status: error.status || 502,
-      }
+      { status: error.status || 502 }
     );
   }
 }
