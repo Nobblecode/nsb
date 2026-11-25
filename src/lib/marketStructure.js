@@ -563,12 +563,11 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     bias !== "neutral" &&
     bias !== signalDirection;
 
-  // Unknown or unverified calendar coverage blocks new trades.
-  // Only verified low/medium event risk can pass this check.
-  const eventRiskAcceptable =
-    calendarVerified &&
-    ["low", "medium"].includes(eventRisk) &&
-    !highRisk;
+  // Only a detected high-impact event inside the configured
+// protection window blocks a new entry.
+// Unverified calendar coverage remains a warning, not a permanent block.
+const eventRiskAcceptable =
+  fundamentals.calendarAvailable !== false && !highRisk;
 
   const technicalSetupValid = Boolean(
     hasTechnicalSignal &&
@@ -646,17 +645,15 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
         : "Fundamental data is incomplete. NSB is operating in technical-only mode. This does not override calendar safety checks.",
     },
     {
-      id: "event-risk",
-      label: "High-impact event risk",
-      passed: eventRiskAcceptable,
-      detail: highRisk
-        ? "A high-impact event is identified. NSB blocks new setups."
-        : calendarUnverified
-          ? `Calendar coverage is ${calendarCoverage} and event risk is ${eventRisk}. NSB blocks new trades until calendar coverage and event risk are verified.`
-          : eventRiskAcceptable
-            ? `Calendar coverage is verified and reported event risk is ${eventRisk}.`
-            : `Event risk status (${eventRisk}) is not an accepted safe status. NSB blocks new trades.`,
-    },
+  id: "event-risk",
+  label: "15-minute high-impact news protection",
+  passed: eventRiskAcceptable,
+  detail: highRisk
+    ? "A relevant high-impact event is inside the configured 15-minute protection window. NSB blocks new entries."
+    : calendarUnverified
+      ? "Calendar coverage is unverified. No high-impact event is currently detected inside the protection window, so technical signals can still be evaluated. This is not proof that the calendar is complete."
+      : "No high-impact event is detected inside the configured protection window.",
+},
     {
       id: "fundamental-bias",
       label: "Fundamental and technical bias",
@@ -678,13 +675,15 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
       : "NO TRADE";
 
   const reason =
-    signal !== "NO TRADE"
-      ? fundamentalsComplete
-        ? "Technical setup confirmed, both timeframe structures align, 4H EMA context does not oppose the setup, and fundamental and event-risk checks passed."
-        : "Technical-only setup confirmed. Both timeframe structures align, and calendar coverage and event risk have been verified."
-      : failedChecks.length
-        ? failedChecks.map((check) => check.detail).join(" ")
-        : oneHour.reason || "No trade setup is confirmed.";
+  signal !== "NO TRADE"
+    ? fundamentalsComplete
+      ? "Technical setup confirmed, both timeframe structures align, 4H EMA context does not oppose the setup, and fundamental bias does not conflict."
+      : calendarUnverified
+        ? "Technical-only setup confirmed. Both timeframe structures align and no high-impact event is detected inside the protection window. Calendar coverage remains unverified."
+        : "Technical-only setup confirmed. Both timeframe structures align and the event-risk check passed."
+    : failedChecks.length
+      ? failedChecks.map((check) => check.detail).join(" ")
+      : oneHour.reason || "No trade setup is confirmed.";
 
   return {
     signal,
@@ -704,6 +703,9 @@ export function combineAnalysis(oneHour, fourHour, fundamentals = {}) {
     fourHourOpposes,
 
     technicalSetupValid: Boolean(technicalSetupValid),
+    technicalSignal,
+    entryBlockedByNews: highRisk,
+    entryAllowed: signal !== "NO TRADE",
     fundamentalsComplete,
     analysisMode,
     eventRisk,

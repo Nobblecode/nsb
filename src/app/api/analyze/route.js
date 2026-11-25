@@ -72,14 +72,13 @@ function unavailableFundamentals(note) {
       recentReleased: 0,
       uncertain: 0,
     },
-    protectionWindow: {
-      beforeMinutes: 60,
-      afterMinutes: 30,
-    },
+   protectionWindow: {
+  beforeMinutes: 15,
+  afterMinutes: 15,
+},
     complete: false,
     note,
-    caution:
-      "Calendar data is unavailable. Event risk is unknown, so NSB must block new setups.",
+   caution: assessedFundamentals.caution,
   };
 }
 
@@ -294,8 +293,8 @@ uncertainEvents:
   fundamentals.uncertainEvents ?? [],
 
 protectionWindow: fundamentals.protectionWindow ?? {
-  beforeMinutes: 60,
-  afterMinutes: 30,
+  beforeMinutes: 15,
+  afterMinutes: 15,
 },
 
 calendarFetchError: calendarResult.error,

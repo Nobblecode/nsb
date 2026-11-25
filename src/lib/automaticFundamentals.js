@@ -334,14 +334,14 @@ export function assessAutomaticFundamentals(
       : [instrument.base, instrument.quote];
 
   const blockBeforeMinutes = getWindowMinutes(
-    process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES,
-    60
-  );
+  process.env.NSB_EVENT_BLOCK_BEFORE_MINUTES,
+  15
+);
 
-  const blockAfterMinutes = getWindowMinutes(
-    process.env.NSB_EVENT_BLOCK_AFTER_MINUTES,
-    30
-  );
+const blockAfterMinutes = getWindowMinutes(
+  process.env.NSB_EVENT_BLOCK_AFTER_MINUTES,
+  15
+);
 
   const datedEvents = [];
   const interpretations = [];
@@ -561,18 +561,22 @@ const allUncertainEvents = [
   }
 
   const caution =
-    eventRisk === "high"
-      ? "A relevant high-impact event is inside the configured protection window. NSB must block new setups."
+  eventRisk === "high"
+    ? "A relevant high-impact event is inside the 15-minute protection window. New entries are blocked."
+    : uncertainProtectedEvents.length > 0
+      ? "A high-impact event has uncertain metadata inside the protection window. New entries are blocked as a precaution."
       : uncertainEvents.length > 0
-        ? `${uncertainEvents.length} relevant event(s) have uncertain metadata. Calendar coverage remains unverified, so NSB must block new setups.`
-        : "No high-impact event was detected inside the configured protection window. This does not establish that the calendar is complete or that event risk is low.";
-
-  return {
+        ? "Some calendar event metadata is uncertain. Calendar coverage remains unverified, but this alone does not trigger the 15-minute news block."
+        : "No relevant high-impact event was detected inside the 15-minute protection window. Calendar coverage remains unverified.";
+ 
+    return {
     source: CALENDAR_SOURCE,
     mode: "automatic",
     symbol,
     bias,
     eventRisk,
+    highImpactProtectionActive: protectedHighImpactEvents.length > 0,
+    entryBlockedByNews: protectedHighImpactEvents.length > 0,
     calendarAvailable: true,
     calendarCoverage,
     upcomingHighImpactEvents,
